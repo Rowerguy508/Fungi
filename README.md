@@ -144,23 +144,48 @@ Hotkeys fired while the popover is closed show a brief glass HUD near the bottom
 
 ## Permissions
 
-Features prompt for their system permission on first use:
+Most features prompt on first use. The ones marked *manual* get no in-app
+prompt — macOS requires you to add Fungi by hand in **System Settings →
+Privacy & Security**.
 
-- **Trellis** → Accessibility
-- **Echo** → Microphone + Speech Recognition
-- **Almanac** → Calendars / Reminders
-- **Post (iMessage)** → Automation (Messages)
-- **Cricket** → Input Monitoring
-- **Low Power Mode** → administrator password (via `pmset`)
+| Feature | Permission | Info.plist key |
+|---|---|---|
+| Echo | Microphone | `NSMicrophoneUsageDescription` |
+| Echo | Speech Recognition | `NSSpeechRecognitionUsageDescription` |
+| Almanac, Calendar toadstool | Calendars | `NSCalendarsFullAccessUsageDescription` |
+| Almanac | Reminders | `NSRemindersFullAccessUsageDescription` |
+| Post, Songbird, Glow | Automation (Apple Events) | `NSAppleEventsUsageDescription` |
+| Trellis | Accessibility — *manual* | — |
+| Cricket | Input Monitoring — *manual* | — |
+| Spore Print | Screen Recording | — |
+| Low Power Mode | administrator password (`pmset`) | — |
+
+The keys without an Info.plist entry are TCC-prompt-only and have no
+corresponding string. The rest are in
+[`Resources/Info.plist`](Resources/Info.plist) and CI fails if any goes
+missing.
 
 ## Build
 
 ```bash
-swift run                # debug build → .build/debug/Fungi
-swift build -c release   # release
+./Scripts/bundle.sh release   # → .build/Fungi.app
+open .build/Fungi.app         # look for 🍄 in the menu bar
 ```
 
 First build resolves the three SwiftPM dependencies above; after that they're cached in `.build/`.
+
+**Build the bundle, not just the binary.** `swift run` produces a bare
+executable with no `Info.plist`, and macOS *terminates* a process that touches
+the microphone, Speech, EventKit or Apple Events without a matching usage
+description — so Echo, Almanac and Post crash rather than showing a permission
+denial. `Scripts/bundle.sh` assembles `Fungi.app` with
+[`Resources/Info.plist`](Resources/Info.plist) and ad-hoc signs it, which also
+keeps TCC grants from being forgotten every time you rebuild.
+
+```bash
+swift build              # fine for a compile check
+swift run                # runs, but crashes on any permission-gated feature
+```
 
 ## Verifying Spore Cloud
 
