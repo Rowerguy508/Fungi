@@ -1248,17 +1248,17 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         // --- Sidebar nav ---
         // Solid backdrop behind the sidebar so the tab labels are readable
         // regardless of the wallpaper. Goes underneath the nav stack.
-        let sidebarBackdrop = NSView(frame: NSRect(x: 12, y: 130, width: 110, height: 440))
+        let sidebarBackdrop = NSView(frame: NSRect(x: 12, y: 130, width: 130, height: 440))
         sidebarBackdrop.wantsLayer = true
         sidebarBackdrop.layer?.backgroundColor = FungiTheme.humus.cgColor
-        sidebarBackdrop.layer?.cornerRadius = 8
+        sidebarBackdrop.layer?.cornerRadius = 10
         v.addSubview(sidebarBackdrop)
 
         let nav = NSStackView()
         nav.orientation = .vertical
         nav.alignment = .leading
         nav.spacing = 4
-        nav.frame = NSRect(x: 12, y: 130, width: 110, height: 440)
+        nav.frame = NSRect(x: 12, y: 130, width: 130, height: 440)
         for tab in Tab.allCases {
             let b = NSButton(title: "\(tab.icon)  \(tab.title)", target: self, action: #selector(switchTab(_:)))
             b.tag = tab.rawValue
@@ -1269,7 +1269,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             b.alignment = .left
             b.wantsLayer = true
             b.layer?.cornerRadius = 8
-            b.frame = NSRect(x: 0, y: 0, width: 110, height: 30)
+            b.frame = NSRect(x: 0, y: 0, width: 130, height: 30)
             tabButtons.append(b)
             nav.addArrangedSubview(b)
         }
@@ -1277,16 +1277,16 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         applyTabStyles()
 
         // --- Content card (everything except footer lives in here) ---
-        let content = GlassCard(frame: NSRect(x: 132, y: 130, width: 396, height: 440))
-        content.material = .hudWindow
-        // Solid backdrop so Grove/Trellis/etc. panes are legible on any wallpaper.
-        // We layer a humus-tone opaque view underneath the glass card so the
-        // visual effect stays, but text/sliders always have a solid surface.
-        let contentBackdrop = NSView(frame: content.bounds)
-        contentBackdrop.wantsLayer = true
-        contentBackdrop.layer?.backgroundColor = FungiTheme.humus.cgColor
-        contentBackdrop.autoresizingMask = [.width, .height]
-        content.addSubview(contentBackdrop, positioned: .below, relativeTo: nil)
+        // Fully opaque rounded rectangle on the humus palette — no glass.
+        // The earlier NSVisualEffectView / .hudWindow tint left the card
+        // looking see-through against some wallpapers, so we drop the
+        // material effect entirely. The NSView itself is the opaque surface.
+        let content = NSView(frame: NSRect(x: 152, y: 130, width: 376, height: 440))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = FungiTheme.humus.cgColor
+        content.layer?.cornerRadius = 12
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.35).cgColor
         v.addSubview(content)
 
         // Each tab's content is added to `content` then hidden/shown
@@ -1640,7 +1640,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         // single-column NSTableView only fit ~12 rows and the scroll position
         // had to be reset every time the tab was reselected (was a bug source).
         // The grid view replaces the table entirely.
-        sporeGrid = NSView(frame: NSRect(x: 14, y: 16, width: 370, height: 408))
+        sporeGrid = NSView(frame: NSRect(x: 14, y: 16, width: 348, height: 408))
         sporeGrid.wantsLayer = true
         sporeGrid.layer?.backgroundColor = FungiTheme.humus.cgColor
         sporeGrid.layer?.cornerRadius = 8
@@ -1650,7 +1650,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
 
         let cols = 4
         let rows = 8 // 32 / 4
-        let cellWidth: CGFloat = 370 / CGFloat(cols) // 92.5
+        let cellWidth: CGFloat = 348 / CGFloat(cols) // 87
         let cellHeight: CGFloat = 408 / CGFloat(rows) // 51
 
         for (index, spore) in SporeManager.shared.spores.enumerated() {
@@ -1680,7 +1680,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         }
 
         sporeHint = SectionLabel("Double-click a toadstool to toggle it · ⓘ for setup", font: FungiTheme.body, color: FungiTheme.fog)
-        sporeHint.frame = NSRect(x: 14, y: 0, width: 370, height: 14)
+        sporeHint.frame = NSRect(x: 14, y: 0, width: 348, height: 14)
         parent.addSubview(sporeHint)
     }
 
