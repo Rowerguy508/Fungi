@@ -545,11 +545,9 @@ final class SporeManager {
         PomodoroSpore(), TruffleSpore(), BambooSpore(), MorelSpore(), CloverSpore(),
         // System
         BatterySpore(), SystemStatsSpore(), NetworkSpore(), StalkSpore(), LichenSpore(),
-        MothSpore(), CapstoneSpore(), PollenSpore(), CactusSpore(),
-        // Environment
-        WeatherSpore(), CalendarSpore(), FernSpore(),
-        // Activity tracking
-        MyceliumSpore(), PinSpore(), BeeSpore(), SlugSpore(), ConiferSpore(),
+        MothSpore(), CapstoneSpore(), PollenSpore(), WeatherSpore(), CalendarSpore(), FernSpore(),
+        // Activity
+        MyceliumSpore(), PinSpore(), BeeSpore(), ConiferSpore(),
         // Fun
         MapleSpore(), FoxSpore(), WarblerSpore(), QuillSpore(),
         // Shell
@@ -643,6 +641,16 @@ final class FrontmostURLSpore: Spore {
         task.arguments = ["-e", script]
         let pipe = Pipe(); task.standardOutput = pipe; task.standardError = Pipe()
         do { try task.run() } catch { statusText = "URL: error"; return }
+        // Wait with timeout to avoid hangs when Accessibility perms are denied
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            task.waitUntilExit()
+            sem.signal()
+        }
+        if sem.wait(timeout: .now() + .seconds(2)) == .timedOut {
+            task.terminate()
+            statusText = "URL: timeout (grant Automation in System Settings)"; return
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if out.hasPrefix("http") {

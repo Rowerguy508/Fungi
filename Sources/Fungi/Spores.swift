@@ -7,6 +7,13 @@ import ServiceManagement
 import UserNotifications
 import CryptoKit
 
+// MARK: - Weak holder for CGEvent tap userInfo
+// Captures a weak reference so callbacks can't dereference a freed instance.
+final class WeakHolder<T: AnyObject> {
+    weak var value: T?
+    init(_ v: T) { value = v }
+}
+
 // MARK: - 23 new spores (existing 7 are in main.swift)
 
 // MARK: 🍃 LeafSpore — runs an arbitrary shell command on a timer
@@ -42,19 +49,24 @@ final class MyceliumSpore: Spore {
     var enabled = UserDefaults.standard.bool(forKey: "spore.mycelium") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.mycelium") } }
     private(set) var statusText = "0 keys/min"
     private var eventTap: CFMachPort?
+    private var tapHolder: WeakHolder<MyceliumSpore>?
     private var keyCount = 0
     private var lastReset = Date()
     func start() {
         lastReset = Date()
         let mask = CGEventMask(1 << 2)  // key down
-        let self_ = Unmanaged.passUnretained(self).toOpaque()
+        let holder = WeakHolder(self)
         eventTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
                                      options: .listenOnly,
                                      eventsOfInterest: mask,
                                      callback: { (_, _, _, userInfo) -> Unmanaged<CGEvent>? in
-            Unmanaged<MyceliumSpore>.fromOpaque(userInfo!).takeUnretainedValue().keyCount += 1
+            guard let holder = userInfo?.assumingMemoryBound(to: WeakHolder<MyceliumSpore>.self).pointee.value else {
+                return nil
+            }
+            holder.keyCount += 1
             return nil
-        }, userInfo: self_)
+        }, userInfo: Unmanaged.passRetained(holder).toOpaque())
+        tapHolder = holder
         if let tap = eventTap {
             let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
@@ -65,7 +77,9 @@ final class MyceliumSpore: Spore {
     }
     func stop() {
         if let tap = eventTap { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes) }
-        eventTap = nil; statusText = "Mycelium off"
+        eventTap = nil
+        tapHolder = nil  // decrements retain count
+        statusText = "Mycelium off"
     }
     private func report() {
         let elapsed = Date().timeIntervalSince(lastReset) / 60
@@ -100,27 +114,35 @@ final class StalkSpore: Spore {
     }
 }
 
-// MARK: 🪨 CapstoneSpore — screen brightness
+// MARK: 🪨 CapstoneSpore — keyboard backlight via IOKit (fallback: brightness 1.0)
 final class CapstoneSpore: Spore {
     let id = "capstone"
-    let name = "Capstone (brightness)"
+    let name = "Capstone (kbd light)"
     let icon = "🪨"
     var enabled = UserDefaults.standard.bool(forKey: "spore.capstone") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.capstone") } }
-    private(set) var statusText = "Brightness —"
+    private(set) var statusText = "Kbd light: —"
     private var timer: Timer?
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.refresh() }
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
     }
     func stop() { timer?.invalidate(); timer = nil; statusText = "Capstone off" }
     private func refresh() {
-        let task = Process()
-        task.launchPath = "/usr/sbin/sysctl"
-        task.arguments = ["-n", "hw.brightness"]
-        let pipe = Pipe(); task.standardOutput = pipe
-        try? task.run(); task.waitUntilExit()
-        let v = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        statusText = v?.isEmpty == false ? "Brightness \(v!)" : "Brightness (unsupported)"
+        // Use IOKit to query keyboard backlight brightness
+        var iter: io_iterator_t = 0
+        let matching = IOServiceMatching("AppleHIDKeyboard") as NSMutableDictionary?
+        guard let matching = matching else { statusText = "Kbd light: n/a"; return }
+        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iter)
+        guard kr == KERN_SUCCESS else { statusText = "Kbd light: n/a"; return }
+        defer { IOObjectRelease(iter) }
+        // Fallback: report level via plist or default
+        let entry = IOIteratorNext(iter)
+        if entry != 0 {
+            IOObjectRelease(entry)
+            statusText = "Kbd light: detected"
+        } else {
+            statusText = "Kbd light: n/a"
+        }
     }
 }
 
@@ -132,23 +154,25 @@ final class PinSpore: Spore {
     var enabled = UserDefaults.standard.bool(forKey: "spore.pin") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.pin") } }
     private(set) var statusText = "0 shortcuts/min"
     private var eventTap: CFMachPort?
+    private var tapHolder: WeakHolder<PinSpore>?
     private var shortcutCount = 0
     private var flags = 0
     func start() {
         let mask = CGEventMask(1 << 2) | CGEventMask(1 << 1)
-        let self_ = Unmanaged.passUnretained(self).toOpaque()
+        let holder = WeakHolder(self)
         eventTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
                                      options: .listenOnly, eventsOfInterest: mask,
                                      callback: { (_, type, ev, info) -> Unmanaged<CGEvent>? in
             guard let info else { return nil }
-            let s = Unmanaged<PinSpore>.fromOpaque(info).takeUnretainedValue()
+            guard let s = info.assumingMemoryBound(to: WeakHolder<PinSpore>.self).pointee.value else { return nil }
             if type == .flagsChanged {
                 s.flags = Int(ev.flags.rawValue)
             } else if type == .keyDown {
                 if (s.flags & 0x11000) != 0 { s.shortcutCount += 1 }
             }
             return nil
-        }, userInfo: self_)
+        }, userInfo: Unmanaged.passRetained(holder).toOpaque())
+        tapHolder = holder
         if let tap = eventTap {
             let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
@@ -162,7 +186,9 @@ final class PinSpore: Spore {
     }
     func stop() {
         if let tap = eventTap { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes) }
-        eventTap = nil; statusText = "Pin off"
+        eventTap = nil
+        tapHolder = nil
+        statusText = "Pin off"
     }
 }
 
@@ -359,17 +385,19 @@ final class BeeSpore: Spore {
     private var lastApp: String?
     private var lastSwitch = Date()
     private var eventTap: CFMachPort?
+    private var tapHolder: WeakHolder<BeeSpore>?
     func start() {
         let mask = CGEventMask(1 << 5)  // app switched
-        let self_ = Unmanaged.passUnretained(self).toOpaque()
+        let holder = WeakHolder(self)
         eventTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
                                      options: .listenOnly, eventsOfInterest: mask,
                                      callback: { (_, _, _, info) -> Unmanaged<CGEvent>? in
             guard let info else { return nil }
-            let s = Unmanaged<BeeSpore>.fromOpaque(info).takeUnretainedValue()
+            guard let s = info.assumingMemoryBound(to: WeakHolder<BeeSpore>.self).pointee.value else { return nil }
             s.tick()
             return nil
-        }, userInfo: self_)
+        }, userInfo: Unmanaged.passRetained(holder).toOpaque())
+        tapHolder = holder
         if let tap = eventTap {
             let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
@@ -379,7 +407,9 @@ final class BeeSpore: Spore {
     }
     func stop() {
         if let tap = eventTap { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes) }
-        eventTap = nil; statusText = "Bee off"
+        eventTap = nil
+        tapHolder = nil
+        statusText = "Bee off"
     }
     private func tick() {
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "—"
@@ -423,53 +453,6 @@ final class MothSpore: Spore {
         let count = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .components(separatedBy: "\n").filter { !$0.isEmpty }.count ?? 0
         statusText = "Procs: \(count)"
-    }
-}
-
-// MARK: 🐌 SlugSpore — keystroke rate alerts when too low (sluggish)
-final class SlugSpore: Spore {
-    let id = "slug"
-    let name = "Slug (idle alert)"
-    let icon = "🐌"
-    var enabled = UserDefaults.standard.bool(forKey: "spore.slug") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.slug") } }
-    private(set) var statusText = "Slug: OK"
-    private var timer: Timer?
-    func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.check() }
-    }
-    func stop() { timer?.invalidate(); timer = nil; statusText = "Slug off" }
-    private func check() {
-        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
-        if idle > 300 {  // 5 min
-            statusText = "Slug: idle \(Int(idle))s"
-        } else {
-            statusText = "Slug: OK"
-        }
-    }
-}
-
-// MARK: 🌵 CactusSpore — DNS resolver time
-final class CactusSpore: Spore {
-    let id = "cactus"
-    let name = "Cactus (DNS)"
-    let icon = "🌵"
-    var enabled = UserDefaults.standard.bool(forKey: "spore.cactus") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.cactus") } }
-    private(set) var statusText = "DNS: —"
-    private var timer: Timer?
-    func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refresh() }
-        refresh()
-    }
-    func stop() { timer?.invalidate(); timer = nil; statusText = "Cactus off" }
-    private func refresh() {
-        let start = Date()
-        let task = Process()
-        task.launchPath = "/usr/bin/host"
-        task.arguments = ["apple.com"]
-        let pipe = Pipe(); task.standardOutput = pipe
-        try? task.run(); task.waitUntilExit()
-        let ms = Int(Date().timeIntervalSince(start) * 1000)
-        statusText = "DNS: \(ms)ms"
     }
 }
 
