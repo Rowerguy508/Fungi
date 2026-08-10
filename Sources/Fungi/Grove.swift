@@ -60,7 +60,10 @@ enum Trellis {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var winRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-              let winAny = winRef else { return false }
+              let winAny = winRef,
+              CFGetTypeID(winAny) == AXUIElementGetTypeID() else { return false }
+        // Checked above — an unguarded force cast here would crash the whole app
+        // from a global hotkey when the front app exposes no focused window.
         let win = winAny as! AXUIElement
         guard let screen = NSScreen.main, let primary = NSScreen.screens.first else { return false }
         let v = screen.visibleFrame
