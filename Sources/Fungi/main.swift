@@ -44,7 +44,7 @@ final class Storage {
     static let shared = Storage()
     let supportDir: URL
     let icloudDir: URL?
-    let dropsDir: URL?
+    let basketDir: URL?
     let clipsFile: URL
     let timersFile: URL
     let imagesDir: URL
@@ -52,25 +52,25 @@ final class Storage {
     private init() {
         let fm = FileManager.default
         let base = try! fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        supportDir = base.appendingPathComponent("Shelf", isDirectory: true)
+        supportDir = base.appendingPathComponent("Fungi", isDirectory: true)
         try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
 
         // iCloud Drive location
         var cloud: URL? = nil
         if let cloudBase = fm.url(forUbiquityContainerIdentifier: nil) {
-            cloud = cloudBase.appendingPathComponent("Documents/Shelf", isDirectory: true)
+            cloud = cloudBase.appendingPathComponent("Documents/Fungi", isDirectory: true)
             try? fm.createDirectory(at: cloud!, withIntermediateDirectories: true)
         } else {
             // Fallback: direct iCloud Drive folder path
             let home = FileManager.default.homeDirectoryForCurrentUser
-            let alt = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Shelf", isDirectory: true)
+            let alt = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Fungi", isDirectory: true)
             if fm.fileExists(atPath: alt.path) || (try? fm.createDirectory(at: alt, withIntermediateDirectories: true)) != nil {
                 cloud = alt
             }
         }
         icloudDir = cloud
-        dropsDir = cloud?.appendingPathComponent("Drops", isDirectory: true)
-        if let d = dropsDir { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        basketDir = cloud?.appendingPathComponent("Basket", isDirectory: true)
+        if let d = basketDir { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
 
         imagesDir = (icloudDir ?? supportDir).appendingPathComponent("clipImages", isDirectory: true)
         try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
@@ -104,9 +104,9 @@ final class Storage {
     }
     func imageURL(for name: String) -> URL { imagesDir.appendingPathComponent(name) }
 
-    /// Files dropped into the tray (live listing of Drops dir)
-    func droppedFiles() -> [URL] {
-        guard let d = dropsDir else { return [] }
+    /// Files dropped into the tray (live listing of Basket dir)
+    func basketFiles() -> [URL] {
+        guard let d = basketDir else { return [] }
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: d,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -117,8 +117,8 @@ final class Storage {
             return a > b
         }
     }
-    func importDrop(from src: URL) -> URL? {
-        guard let d = dropsDir else { return nil }
+    func addToBasket(from src: URL) -> URL? {
+        guard let d = basketDir else { return nil }
         let dest = d.appendingPathComponent(src.lastPathComponent)
         var final = dest
         var i = 1
@@ -282,7 +282,7 @@ final class TimerManager: ObservableObject {
 
 // MARK: - Drag & Drop Target View
 
-final class DropView: NSView {
+final class BasketView: NSView {
     var onDrop: ((URL) -> Void)?
     var label: String = "Drop files here" {
         didSet { needsDisplay = true }
@@ -379,7 +379,7 @@ final class PillController: NSObject {
         btn.frame = NSRect(x: 158, y: 9, width: 28, height: 22)
         container.addSubview(btn)
 
-        let open = NSButton(title: "▦", target: self, action: #selector(openShelf))
+        let open = NSButton(title: "▦", target: self, action: #selector(openFungi))
         open.isBordered = false
         open.font = NSFont.systemFont(ofSize: 12)
         open.contentTintColor = .white
@@ -414,12 +414,12 @@ final class PillController: NSObject {
     func setClipCount(_ n: Int) { clipLabel.stringValue = "📋 \(n)" }
 
     @objc private func playPause() { MediaController.send(.toggle) }
-    @objc private func openShelf() { onToggle?() }
+    @objc private func openFungi() { onToggle?() }
 }
 
-// MARK: - Droplets (extension system)
+// MARK: - Spores (extension system)
 
-protocol Droplet: AnyObject {
+protocol Spore: AnyObject {
     var id: String { get }
     var name: String { get }
     var icon: String { get }
@@ -429,11 +429,11 @@ protocol Droplet: AnyObject {
     func stop()
 }
 
-final class PomodoroDroplet: Droplet {
+final class PomodoroSpore: Spore {
     let id = "pomodoro"
     let name = "Pomodoro"
     let icon = "🍅"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.pomodoro") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.pomodoro") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.pomodoro") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.pomodoro") } }
     private(set) var statusText = "25 min focus / 5 min break"
     private var timer: Timer?
     private var isFocus = true
@@ -466,11 +466,11 @@ final class PomodoroDroplet: Droplet {
     }
 }
 
-final class BatteryDroplet: Droplet {
+final class BatterySpore: Spore {
     let id = "battery"
     let name = "Battery monitor"
     let icon = "🔋"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.battery") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.battery") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.battery") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.battery") } }
     private(set) var statusText = "Monitoring battery"
     private var timer: Timer?
     private var lastAlerted = false
@@ -504,11 +504,11 @@ final class BatteryDroplet: Droplet {
     }
 }
 
-final class WeatherDroplet: Droplet {
+final class WeatherSpore: Spore {
     let id = "weather"
     let name = "Weather"
     let icon = "🌤"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.weather") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.weather") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.weather") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.weather") } }
     private(set) var statusText = "Fetching weather…"
 
     func start() { refresh() }
@@ -528,27 +528,42 @@ final class WeatherDroplet: Droplet {
     }
 }
 
-final class DropletManager {
-    static let shared = DropletManager()
-    let droplets: [Droplet] = [PomodoroDroplet(), BatteryDroplet(), WeatherDroplet(), CalendarDroplet(), FrontmostURLDroplet(), SystemStatsDroplet(), NetworkDroplet()]
+final class SporeManager {
+    static let shared = SporeManager()
+    let spores: [Spore] = [
+        // Productivity
+        PomodoroSpore(), TruffleSpore(), BambooSpore(), MorelSpore(), CloverSpore(),
+        // System
+        BatterySpore(), SystemStatsSpore(), NetworkSpore(), StalkSpore(), LichenSpore(),
+        MothSpore(), CapstoneSpore(), PollenSpore(), CactusSpore(),
+        // Environment
+        WeatherSpore(), CalendarSpore(), FernSpore(),
+        // Activity tracking
+        MyceliumSpore(), PinSpore(), BeeSpore(), SlugSpore(), ConiferSpore(),
+        // Fun
+        MapleSpore(), FoxSpore(), WarblerSpore(), QuillSpore(),
+        // Shell
+        FrontmostURLSpore(), RootSpore(), SporeworkSpore(), BloomSpore(), HuskSpore(),
+        LeafSpore()
+    ]
     var refreshUI: (() -> Void)?
     private init() {
-        for d in droplets where d.enabled { d.start() }
+        for d in spores where d.enabled { d.start() }
     }
-    func toggle(_ d: Droplet) {
+    func toggle(_ d: Spore) {
         d.enabled.toggle()
         if d.enabled { d.start() } else { d.stop() }
         refreshUI?()
     }
 }
 
-// MARK: - Calendar droplet (EventKit)
+// MARK: - Calendar spore (EventKit)
 
-final class CalendarDroplet: Droplet {
+final class CalendarSpore: Spore {
     let id = "calendar"
     let name = "Calendar"
     let icon = "📅"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.calendar") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.calendar") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.calendar") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.calendar") } }
     private(set) var statusText = "Next event: —"
     private let store = EKEventStore()
     private var timer: Timer?
@@ -584,13 +599,13 @@ final class CalendarDroplet: Droplet {
     }
 }
 
-// MARK: - Frontmost URL droplet (Safari/Chrome)
+// MARK: - Frontmost URL spore (Safari/Chrome)
 
-final class FrontmostURLDroplet: Droplet {
+final class FrontmostURLSpore: Spore {
     let id = "frontmost-url"
     let name = "Frontmost URL"
     let icon = "🌐"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.frontmost-url") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.frontmost-url") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.frontmost-url") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.frontmost-url") } }
     private(set) var statusText = "URL: —"
     private var timer: Timer?
 
@@ -629,13 +644,13 @@ final class FrontmostURLDroplet: Droplet {
     }
 }
 
-// MARK: - System stats droplet
+// MARK: - System stats spore
 
-final class SystemStatsDroplet: Droplet {
+final class SystemStatsSpore: Spore {
     let id = "system-stats"
     let name = "System stats"
     let icon = "💻"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.system-stats") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.system-stats") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.system-stats") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.system-stats") } }
     private(set) var statusText = "CPU — | RAM —"
     private var timer: Timer?
 
@@ -675,13 +690,13 @@ final class SystemStatsDroplet: Droplet {
     }
 }
 
-// MARK: - Network droplet (SSID + latency)
+// MARK: - Network spore (SSID + latency)
 
-final class NetworkDroplet: Droplet {
+final class NetworkSpore: Spore {
     let id = "network"
     let name = "Network"
     let icon = "📶"
-    var enabled = UserDefaults.standard.bool(forKey: "droplet.network") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.network") } }
+    var enabled = UserDefaults.standard.bool(forKey: "spore.network") { didSet { UserDefaults.standard.set(enabled, forKey: "spore.network") } }
     private(set) var statusText = "WiFi —"
     private var timer: Timer?
 
@@ -719,10 +734,10 @@ final class NetworkDroplet: Droplet {
     }
 }
 
-// MARK: - Shelf Cloud (LAN share links + iCloud share sheet)
+// MARK: - Spore Cloud (LAN share links + iCloud share sheet)
 
-final class ShelfCloud {
-    static let shared = ShelfCloud()
+final class SporeCloud {
+    static let shared = SporeCloud()
     var isRunning = false
     private var listener: NWListener?
     private var statusChanged: (() -> Void)?
@@ -749,14 +764,14 @@ final class ShelfCloud {
         statusChanged?()
     }
 
-    /// Serve one HTTP GET and close. Files served from Drops dir.
+    /// Serve one HTTP GET and close. Files served from Basket dir.
     private func handle(_ conn: NWConnection) {
         conn.start(queue: .global())
         conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
             guard let self, let data, let raw = String(data: data, encoding: .utf8) else { conn.cancel(); return }
             let line = raw.components(separatedBy: "\r\n").first ?? ""
             let parts = line.split(separator: " ")
-            guard parts.count >= 2, parts[0] == "GET", let drops = Storage.shared.dropsDir else {
+            guard parts.count >= 2, parts[0] == "GET", let drops = Storage.shared.basketDir else {
                 self.http(conn, code: 400, body: "bad request")
                 return
             }
@@ -816,12 +831,12 @@ final class ShelfCloud {
     }
 }
 
-// MARK: - Lock Screen Widget Overlay (idle-triggered, like Droppy lock screen)
+// MARK: - Nightcap Widget Overlay (idle-triggered, like Fungi nightcap)
 
-final class LockScreenController {
-    static let shared = LockScreenController()
-    var enabled = UserDefaults.standard.bool(forKey: "lockScreen.enabled") { didSet { UserDefaults.standard.set(enabled, forKey: "lockScreen.enabled") } }
-    var idleMinutes = UserDefaults.standard.integer(forKey: "lockScreen.idleMinutes") == 0 ? 5 : UserDefaults.standard.integer(forKey: "lockScreen.idleMinutes")
+final class NightcapController {
+    static let shared = NightcapController()
+    var enabled = UserDefaults.standard.bool(forKey: "nightcap.enabled") { didSet { UserDefaults.standard.set(enabled, forKey: "nightcap.enabled") } }
+    var idleMinutes = UserDefaults.standard.integer(forKey: "nightcap.idleMinutes") == 0 ? 5 : UserDefaults.standard.integer(forKey: "nightcap.idleMinutes")
     private var panel: NSPanel?
     private var idleTimer: Timer?
     private var clockTimer: Timer?
@@ -906,8 +921,8 @@ final class LockScreenController {
             guard let self, self.shown else { return }
             time.stringValue = tf.string(from: Date())
             date.stringValue = df.string(from: Date())
-            let droplets = DropletManager.shared.droplets
-            for d in droplets {
+            let spores = SporeManager.shared.spores
+            for d in spores {
                 if d.id == "battery" && d.enabled { batteryLbl.stringValue = "🔋 \(d.statusText)" }
                 if d.id == "weather" && d.enabled { weatherLbl.stringValue = "🌤 \(d.statusText)" }
                 if d.id == "calendar" && d.enabled { calLbl.stringValue = "📅 \(d.statusText)" }
@@ -962,9 +977,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popoverVC.onPillToggle = { [weak self] in self?.togglePill() }
         clipboard.start()
         timerManager.start()
-        _ = DropletManager.shared
-        LockScreenController.shared.startMonitoring()
-        ShelfCloud.shared.start { [weak self] in
+        _ = SporeManager.shared
+        NightcapController.shared.startMonitoring()
+        SporeCloud.shared.start { [weak self] in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.popoverVC.refreshCloudStateSafe()
@@ -975,10 +990,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.popoverVC.updateClipCount(self?.clipboard.items.count ?? 0)
         }
         if showPill { togglePill() }
-        // Refresh droplet status every 5s so the UI shows live updates
+        // Refresh spore status every 5s so the UI shows live updates
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             guard let self = self, self.popoverVC.currentTab == 4 else { return }
-            self.popoverVC.dropletTable.reloadData()
+            self.popoverVC.sporeTable.reloadData()
         }
     }
 
@@ -1012,7 +1027,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     weak var clipboard: ClipboardManager?
     weak var timerManager: TimerManager?
     var onPillToggle: (() -> Void)?
-    let tabs = ["Clipboard", "Files", "Timers", "Media", "Droplets", "Settings"]
+    let tabs = ["Clipboard", "Files", "Timers", "Media", "Spores", "Settings"]
     var currentTab = 0
     var tabButtons: [NSButton] = []
     let searchField = NSTextField()
@@ -1025,17 +1040,17 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     var launchAtLogin: NSButton!
     var pillToggle: NSButton!
     var icloudLabel: NSTextField!
-    var dropView: DropView!
+    var basketView: BasketView!
     var mediaRow: NSStackView!
     var timerAdd: NSStackView!
-    var dropletTable: NSTableView!
+    var sporeTable: NSTableView!
     var shareButton: NSButton!
-    var dropletHint: NSTextField!
+    var sporeHint: NSTextField!
     var cloudLinkBtn: NSButton!
     var cloudStatusLabel: NSTextField!
     var cloudToggleButton: NSButton!
-    var lockScreenToggle: NSButton!
-    var lockScreenHint: NSTextField!
+    var nightcapToggle: NSButton!
+    var nightcapHint: NSTextField!
 
     override func loadView() {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 600))
@@ -1048,7 +1063,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         header.layer?.backgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1.0).cgColor
         v.addSubview(header)
 
-        let title = NSTextField(labelWithString: "Shelf")
+        let title = NSTextField(labelWithString: "Fungi")
         title.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         title.textColor = .white
         title.frame = NSRect(x: 16, y: 10, width: 200, height: 22)
@@ -1099,15 +1114,15 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         v.addSubview(timerList)
 
         // Drop zone (Files tab)
-        dropView = DropView(frame: NSRect(x: 12, y: 448, width: 456, height: 62))
-        dropView.label = "Drop files here → saved to iCloud Drive"
-        dropView.onDrop = { [weak self] url in
-            _ = Storage.shared.importDrop(from: url)
+        basketView = BasketView(frame: NSRect(x: 12, y: 448, width: 456, height: 62))
+        basketView.label = "Toss files into your basket (iCloud sync)"
+        basketView.onDrop = { [weak self] url in
+            _ = Storage.shared.addToBasket(from: url)
             self?.fileTable.reloadData()
-            self?.statusLabel.stringValue = "Imported \(url.lastPathComponent) → iCloud Drops"
+            self?.statusLabel.stringValue = "Imported \(url.lastPathComponent) → iCloud Basket"
         }
-        dropView.isHidden = true
-        v.addSubview(dropView)
+        basketView.isHidden = true
+        v.addSubview(basketView)
 
         // Share button (Files tab) — share selected file via AirDrop/Messages/Mail
         shareButton = NSButton(title: "↗️ Share…", target: self, action: #selector(shareFile))
@@ -1127,52 +1142,52 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         self.cloudLinkBtn = cloudLinkBtn
 
         // Cloud status row (Settings tab)
-        cloudStatusLabel = NSTextField(labelWithString: "Shelf Cloud: starting…")
+        cloudStatusLabel = NSTextField(labelWithString: "Spore Cloud: starting…")
         cloudStatusLabel.font = NSFont.systemFont(ofSize: 11)
         cloudStatusLabel.textColor = NSColor(white: 0.7, alpha: 1)
         cloudStatusLabel.frame = NSRect(x: 12, y: 380, width: 456, height: 16)
         cloudStatusLabel.isHidden = true
         v.addSubview(cloudStatusLabel)
 
-        cloudToggleButton = NSButton(checkboxWithTitle: "Enable Shelf Cloud (LAN share links)", target: self, action: #selector(toggleCloud))
+        cloudToggleButton = NSButton(checkboxWithTitle: "Enable Spore Cloud (LAN share links)", target: self, action: #selector(toggleCloud))
         cloudToggleButton.frame = NSRect(x: 12, y: 360, width: 320, height: 20)
         cloudToggleButton.isHidden = true
         v.addSubview(cloudToggleButton)
 
-        // Lock screen widget toggle (Settings tab)
-        lockScreenToggle = NSButton(checkboxWithTitle: "Show lock screen widgets when idle", target: self, action: #selector(toggleLockScreen))
-        lockScreenToggle.frame = NSRect(x: 12, y: 330, width: 320, height: 20)
-        lockScreenToggle.isHidden = true
-        v.addSubview(lockScreenToggle)
+        // Nightcap widget toggle (Settings tab)
+        nightcapToggle = NSButton(checkboxWithTitle: "Show nightcap widgets when idle", target: self, action: #selector(toggleNightcap))
+        nightcapToggle.frame = NSRect(x: 12, y: 330, width: 320, height: 20)
+        nightcapToggle.isHidden = true
+        v.addSubview(nightcapToggle)
 
-        lockScreenHint = NSTextField(labelWithString: "Idle threshold: 5 min (set via UserDefaults lockScreen.idleMinutes)")
-        lockScreenHint.font = NSFont.systemFont(ofSize: 10)
-        lockScreenHint.textColor = NSColor(white: 0.6, alpha: 1)
-        lockScreenHint.frame = NSRect(x: 12, y: 312, width: 456, height: 14)
-        lockScreenHint.isHidden = true
-        v.addSubview(lockScreenHint)
+        nightcapHint = NSTextField(labelWithString: "Idle threshold: 5 min (set via UserDefaults nightcap.idleMinutes)")
+        nightcapHint.font = NSFont.systemFont(ofSize: 10)
+        nightcapHint.textColor = NSColor(white: 0.6, alpha: 1)
+        nightcapHint.frame = NSRect(x: 12, y: 312, width: 456, height: 14)
+        nightcapHint.isHidden = true
+        v.addSubview(nightcapHint)
 
-        // Droplets table
-        dropletTable = NSTableView()
+        // Spores table
+        sporeTable = NSTableView()
         let dcol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("d"))
         dcol.width = 460
-        dropletTable.addTableColumn(dcol)
-        dropletTable.headerView = nil
-        dropletTable.dataSource = self
-        dropletTable.delegate = self
-        dropletTable.backgroundColor = .clear
-        dropletTable.frame = NSRect(x: 0, y: 160, width: 480, height: 300)
-        dropletTable.isHidden = true
-        v.addSubview(dropletTable)
+        sporeTable.addTableColumn(dcol)
+        sporeTable.headerView = nil
+        sporeTable.dataSource = self
+        sporeTable.delegate = self
+        sporeTable.backgroundColor = .clear
+        sporeTable.frame = NSRect(x: 0, y: 160, width: 480, height: 300)
+        sporeTable.isHidden = true
+        v.addSubview(sporeTable)
 
-        // Droplet detail (toggle + refresh buttons) — simple: use a table with checkbox cells instead
-        let dropletHint = NSTextField(labelWithString: "Toggle a droplet to enable it. Droplets run in the background and notify you.")
-        dropletHint.textColor = NSColor(white: 0.6, alpha: 1)
-        dropletHint.font = NSFont.systemFont(ofSize: 11)
-        dropletHint.frame = NSRect(x: 12, y: 470, width: 456, height: 18)
-        dropletHint.isHidden = true
-        v.addSubview(dropletHint)
-        self.dropletHint = dropletHint
+        // Spore detail (toggle + refresh buttons) — simple: use a table with checkbox cells instead
+        let sporeHint = NSTextField(labelWithString: "Toggle a spore to enable it. Spores run in the background and notify you.")
+        sporeHint.textColor = NSColor(white: 0.6, alpha: 1)
+        sporeHint.font = NSFont.systemFont(ofSize: 11)
+        sporeHint.frame = NSRect(x: 12, y: 470, width: 456, height: 18)
+        sporeHint.isHidden = true
+        v.addSubview(sporeHint)
+        self.sporeHint = sporeHint
 
         // Media buttons row
         let mediaRowLocal = NSStackView()
@@ -1215,7 +1230,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         self.timerAdd = timerAddLocal
 
         // Settings rows
-        launchAtLogin = NSButton(checkboxWithTitle: "Launch Shelf at login", target: self, action: #selector(toggleLaunchAtLogin))
+        launchAtLogin = NSButton(checkboxWithTitle: "Launch Fungi at login", target: self, action: #selector(toggleLaunchAtLogin))
         launchAtLogin.frame = NSRect(x: 16, y: 130, width: 300, height: 22)
         launchAtLogin.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         launchAtLogin.isHidden = true
@@ -1271,28 +1286,28 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         fileTable.isHidden = currentTab != 1
         timerList.isHidden = currentTab != 2
         searchField.isHidden = currentTab != 0
-        dropView?.isHidden = currentTab != 1
+        basketView?.isHidden = currentTab != 1
         shareButton?.isHidden = currentTab != 1
         cloudLinkBtn?.isHidden = currentTab != 1
         mediaRow?.isHidden = currentTab != 3
         timerAdd?.isHidden = currentTab != 2
-        dropletTable.isHidden = currentTab != 4
-        dropletHint.isHidden = currentTab != 4
+        sporeTable.isHidden = currentTab != 4
+        sporeHint.isHidden = currentTab != 4
         launchAtLogin.isHidden = currentTab != 5
         pillToggle.isHidden = currentTab != 5
         cloudStatusLabel.isHidden = currentTab != 5
         cloudToggleButton.isHidden = currentTab != 5
-        lockScreenToggle.isHidden = currentTab != 5
-        lockScreenHint.isHidden = currentTab != 5
+        nightcapToggle.isHidden = currentTab != 5
+        nightcapHint.isHidden = currentTab != 5
         if currentTab == 5 {
             refreshPillState(UserDefaults.standard.bool(forKey: "showPill"))
             refreshCloudState()
-            cloudToggleButton.state = (ShelfCloud.shared.isRunning ? .on : .off)
-            lockScreenToggle.state = (LockScreenController.shared.enabled ? .on : .off)
+            cloudToggleButton.state = (SporeCloud.shared.isRunning ? .on : .off)
+            nightcapToggle.state = (NightcapController.shared.enabled ? .on : .off)
         }
         if currentTab == 1 { fileTable.reloadData() }
         if currentTab == 2 { timerList.reloadData() }
-        if currentTab == 4 { dropletTable.reloadData() }
+        if currentTab == 4 { sporeTable.reloadData() }
         if currentTab == 5 { refreshPillState(UserDefaults.standard.bool(forKey: "showPill")) }
     }
 
@@ -1334,7 +1349,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             clipboard?.copy(item)
             statusLabel.stringValue = "Copied to clipboard"
         } else if currentTab == 1, row >= 0 {
-            let files = Storage.shared.droppedFiles()
+            let files = Storage.shared.basketFiles()
             if row < files.count {
                 NSWorkspace.shared.activateFileViewerSelecting([files[row]])
                 statusLabel.stringValue = "Revealed in Finder"
@@ -1344,22 +1359,22 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             timerList.reloadData()
             statusLabel.stringValue = "Timer cancelled"
         } else if currentTab == 4, row >= 0 {
-            let droplets = DropletManager.shared.droplets
-            if row < droplets.count {
-                DropletManager.shared.toggle(droplets[row])
-                dropletTable.reloadData()
-                statusLabel.stringValue = "Toggled \(droplets[row].name)"
+            let spores = SporeManager.shared.spores
+            if row < spores.count {
+                SporeManager.shared.toggle(spores[row])
+                sporeTable.reloadData()
+                statusLabel.stringValue = "Toggled \(spores[row].name)"
             }
         }
     }
 
     @objc func shareFile() {
-        let files = Storage.shared.droppedFiles()
+        let files = Storage.shared.basketFiles()
         guard !files.isEmpty else { statusLabel.stringValue = "No files to share"; return }
         let pick = NSOpenPanel()
         pick.canChooseFiles = true
         pick.allowsMultipleSelection = false
-        pick.directoryURL = Storage.shared.dropsDir
+        pick.directoryURL = Storage.shared.basketDir
         pick.message = "Select a file to share via AirDrop / Messages / Mail"
         if pick.runModal() == .OK, let url = pick.url {
             let picker = NSSharingServicePicker(items: [url])
@@ -1372,10 +1387,10 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         let pick = NSOpenPanel()
         pick.canChooseFiles = true
         pick.allowsMultipleSelection = false
-        pick.directoryURL = Storage.shared.dropsDir
+        pick.directoryURL = Storage.shared.basketDir
         pick.message = "Select a file to generate a LAN share link"
         guard pick.runModal() == .OK, let url = pick.url else { return }
-        guard let link = ShelfCloud.shared.link(for: url.lastPathComponent) else {
+        guard let link = SporeCloud.shared.link(for: url.lastPathComponent) else {
             statusLabel.stringValue = "Cloud not running — enable in Settings"
             return
         }
@@ -1386,30 +1401,30 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     @objc func toggleCloud() {
-        if ShelfCloud.shared.isRunning {
-            ShelfCloud.shared.stop()
+        if SporeCloud.shared.isRunning {
+            SporeCloud.shared.stop()
         } else {
-            ShelfCloud.shared.start { [weak self] in
+            SporeCloud.shared.start { [weak self] in
                 DispatchQueue.main.async { self?.refreshCloudStateSafe() }
             }
         }
     }
 
-    @objc func toggleLockScreen() {
-        LockScreenController.shared.enabled.toggle()
-        if LockScreenController.shared.enabled && !LockScreenController.shared.isShown {
-            LockScreenController.shared.show()
-        } else if !LockScreenController.shared.enabled {
-            LockScreenController.shared.hide()
+    @objc func toggleNightcap() {
+        NightcapController.shared.enabled.toggle()
+        if NightcapController.shared.enabled && !NightcapController.shared.isShown {
+            NightcapController.shared.show()
+        } else if !NightcapController.shared.enabled {
+            NightcapController.shared.hide()
         }
     }
 
     func refreshCloudState() {
-        if ShelfCloud.shared.isRunning {
-            cloudStatusLabel.stringValue = "Shelf Cloud: ✓ running — share files via the link button in Files tab"
+        if SporeCloud.shared.isRunning {
+            cloudStatusLabel.stringValue = "Spore Cloud: ✓ running — share files via the link button in Files tab"
             cloudStatusLabel.textColor = NSColor(calibratedRed: 0.4, green: 0.9, blue: 0.4, alpha: 1)
         } else {
-            cloudStatusLabel.stringValue = "Shelf Cloud: ⏸ off — toggle below to start LAN file sharing"
+            cloudStatusLabel.stringValue = "Spore Cloud: ⏸ off — toggle below to start LAN file sharing"
             cloudStatusLabel.textColor = NSColor(calibratedRed: 0.9, green: 0.5, blue: 0.3, alpha: 1)
         }
     }
@@ -1420,15 +1435,15 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func updateClipCount(_ n: Int) {
-        LockScreenController.shared.clipCount = n
+        NightcapController.shared.clipCount = n
     }
 
     // NSTableView
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView == clipTable { return clipboard?.filtered.count ?? 0 }
-        if tableView == fileTable { return Storage.shared.droppedFiles().count }
+        if tableView == fileTable { return Storage.shared.basketFiles().count }
         if tableView == timerList { return timerManager?.timers.count ?? 0 }
-        if tableView == dropletTable { return DropletManager.shared.droplets.count }
+        if tableView == sporeTable { return SporeManager.shared.spores.count }
         return 0
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1440,7 +1455,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         if tableView == clipTable, let item = clipboard?.filtered[safe: row] {
             tf.stringValue = item.preview
         } else if tableView == fileTable {
-            let files = Storage.shared.droppedFiles()
+            let files = Storage.shared.basketFiles()
             if row < files.count {
                 let url = files[row]
                 let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
@@ -1454,10 +1469,10 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             let m = Int(remaining) / 60
             let s = Int(remaining) % 60
             tf.stringValue = "\(t.label)  \(m):\(String(format: "%02d", s))"
-        } else if tableView == dropletTable {
-            let droplets = DropletManager.shared.droplets
-            if row < droplets.count {
-                let d = droplets[row]
+        } else if tableView == sporeTable {
+            let spores = SporeManager.shared.spores
+            if row < spores.count {
+                let d = spores[row]
                 let mark = d.enabled ? "●" : "○"
                 tf.stringValue = "\(mark) \(d.icon)  \(d.name)  —  \(d.statusText)"
             }
