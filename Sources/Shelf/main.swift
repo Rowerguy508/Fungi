@@ -14,7 +14,7 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
     let id: UUID
     let timestamp: Date
     let text: String?
-    let imagePath: String?  // Relative to support dir
+    let imagePath: String?
     let filePaths: [String]?
 
     var preview: String {
@@ -35,11 +35,13 @@ struct TimerEntry: Identifiable, Codable {
     var remaining: TimeInterval
 }
 
-// MARK: - Storage
+// MARK: - Storage (iCloud-first with local fallback)
 
 final class Storage {
     static let shared = Storage()
     let supportDir: URL
+    let icloudDir: URL?
+    let dropsDir: URL?
     let clipsFile: URL
     let timersFile: URL
     let imagesDir: URL
@@ -49,11 +51,31 @@ final class Storage {
         let base = try! fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         supportDir = base.appendingPathComponent("Shelf", isDirectory: true)
         try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
-        imagesDir = supportDir.appendingPathComponent("clipImages", isDirectory: true)
+
+        // iCloud Drive location
+        var cloud: URL? = nil
+        if let cloudBase = fm.url(forUbiquityContainerIdentifier: nil) {
+            cloud = cloudBase.appendingPathComponent("Documents/Shelf", isDirectory: true)
+            try? fm.createDirectory(at: cloud!, withIntermediateDirectories: true)
+        } else {
+            // Fallback: direct iCloud Drive folder path
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            let alt = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Shelf", isDirectory: true)
+            if fm.fileExists(atPath: alt.path) || (try? fm.createDirectory(at: alt, withIntermediateDirectories: true)) != nil {
+                cloud = alt
+            }
+        }
+        icloudDir = cloud
+        dropsDir = cloud?.appendingPathComponent("Drops", isDirectory: true)
+        if let d = dropsDir { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+
+        imagesDir = (icloudDir ?? supportDir).appendingPathComponent("clipImages", isDirectory: true)
         try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
-        clipsFile = supportDir.appendingPathComponent("clips.json")
-        timersFile = supportDir.appendingPathComponent("timers.json")
+        clipsFile = (icloudDir ?? supportDir).appendingPathComponent("clips.json")
+        timersFile = (icloudDir ?? supportDir).appendingPathComponent("timers.json")
     }
+
+    var usingICloud: Bool { icloudDir != nil }
 
     func loadClips() -> [ClipboardItem] {
         guard let data = try? Data(contentsOf: clipsFile),
@@ -78,6 +100,35 @@ final class Storage {
         }
     }
     func imageURL(for name: String) -> URL { imagesDir.appendingPathComponent(name) }
+
+    /// Files dropped into the tray (live listing of Drops dir)
+    func droppedFiles() -> [URL] {
+        guard let d = dropsDir else { return [] }
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: d,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles)) ?? []
+        return urls.sorted {
+            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return a > b
+        }
+    }
+    func importDrop(from src: URL) -> URL? {
+        guard let d = dropsDir else { return nil }
+        let dest = d.appendingPathComponent(src.lastPathComponent)
+        var final = dest
+        var i = 1
+        while FileManager.default.fileExists(atPath: final.path) {
+            let name = (dest.deletingPathExtension().lastPathComponent) + " \(i)." + dest.pathExtension
+            final = d.appendingPathComponent(name)
+            i += 1
+        }
+        do {
+            try FileManager.default.copyItem(at: src, to: final)
+            return final
+        } catch { return nil }
+    }
 }
 
 // MARK: - Clipboard Manager
@@ -162,11 +213,12 @@ final class MediaController {
     static func send(_ cmd: MediaCommand) {
         let script: String
         switch cmd {
-        case .play: script = "tell application \"System Events\" to keystroke (ASCII character 16) using {command down}"
-        case .pause: script = "tell application \"System Events\" to keystroke (ASCII character 16) using {command down}"
-        case .next: script = "tell application \"System Events\" to key code 124 using {command down, option down}"
-        case .previous: script = "tell application \"System Events\" to key code 123 using {command down, option down}"
-        case .toggle: script = "tell application \"System Events\" to keystroke (ASCII character 16) using {command down}"
+        case .play, .pause, .toggle:
+            script = "tell application \"System Events\" to keystroke (ASCII character 16) using {command down}"
+        case .next:
+            script = "tell application \"System Events\" to key code 124 using {command down, option down}"
+        case .previous:
+            script = "tell application \"System Events\" to key code 123 using {command down, option down}"
         }
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process()
@@ -213,14 +265,153 @@ final class TimerManager: ObservableObject {
         if changed { Storage.shared.saveTimers(timers) }
     }
     private func notify(label: String) {
-        let n = NSUserNotification()
-        n.title = "Timer done"
-        n.informativeText = label
-        NSUserNotificationCenter.default.deliver(n)
+        let content = UNMutableNotificationContent()
+        content.title = "Timer done"
+        content.body = label
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
     private func requestNotifPerm() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
+}
+
+// MARK: - Drag & Drop Target View
+
+final class DropView: NSView {
+    var onDrop: ((URL) -> Void)?
+    var label: String = "Drop files here" {
+        didSet { needsDisplay = true }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 1.5
+        layer?.borderColor = NSColor(calibratedRed: 0.3, green: 0.6, blue: 1.0, alpha: 0.6).cgColor
+        layer?.backgroundColor = NSColor(calibratedRed: 0.15, green: 0.25, blue: 0.45, alpha: 0.5).cgColor
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor(white: 0.8, alpha: 1),
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium)
+        ]
+        let size = (label as NSString).size(withAttributes: attrs)
+        (label as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2), withAttributes: attrs)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        layer?.borderColor = NSColor(calibratedRed: 0.5, green: 0.9, blue: 1.0, alpha: 1).cgColor
+        layer?.backgroundColor = NSColor(calibratedRed: 0.2, green: 0.4, blue: 0.6, alpha: 0.7).cgColor
+        return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        layer?.borderColor = NSColor(calibratedRed: 0.3, green: 0.6, blue: 1.0, alpha: 0.6).cgColor
+        layer?.backgroundColor = NSColor(calibratedRed: 0.15, green: 0.25, blue: 0.45, alpha: 0.5).cgColor
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        layer?.borderColor = NSColor(calibratedRed: 0.3, green: 0.6, blue: 1.0, alpha: 0.6).cgColor
+        layer?.backgroundColor = NSColor(calibratedRed: 0.15, green: 0.25, blue: 0.45, alpha: 0.5).cgColor
+        if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], let first = urls.first {
+            onDrop?(first)
+            return true
+        }
+        return false
+    }
+}
+
+// MARK: - Floating Pill (Dynamic Island style)
+
+final class PillController: NSObject {
+    private var panel: NSPanel!
+    private var timeLabel: NSTextField!
+    private var clipLabel: NSTextField!
+    private var onToggle: (() -> Void)?
+
+    init(onToggle: @escaping () -> Void) {
+        self.onToggle = onToggle
+        super.init()
+        build()
+    }
+
+    private func build() {
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 220, height: 40),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isMovable = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 40))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 20
+        container.layer?.backgroundColor = NSColor(calibratedRed: 0.1, green: 0.1, blue: 0.14, alpha: 0.92).cgColor
+        panel.contentView = container
+
+        timeLabel = NSTextField(labelWithString: "")
+        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        timeLabel.textColor = .white
+        timeLabel.frame = NSRect(x: 14, y: 11, width: 70, height: 18)
+        container.addSubview(timeLabel)
+
+        clipLabel = NSTextField(labelWithString: "📋 0")
+        clipLabel.font = NSFont.systemFont(ofSize: 12)
+        clipLabel.textColor = NSColor(white: 0.75, alpha: 1)
+        clipLabel.frame = NSRect(x: 92, y: 11, width: 60, height: 18)
+        container.addSubview(clipLabel)
+
+        let btn = NSButton(title: "⏯", target: self, action: #selector(playPause))
+        btn.isBordered = false
+        btn.font = NSFont.systemFont(ofSize: 12)
+        btn.contentTintColor = .white
+        btn.frame = NSRect(x: 158, y: 9, width: 28, height: 22)
+        container.addSubview(btn)
+
+        let open = NSButton(title: "▦", target: self, action: #selector(openShelf))
+        open.isBordered = false
+        open.font = NSFont.systemFont(ofSize: 12)
+        open.contentTintColor = .white
+        open.frame = NSRect(x: 188, y: 9, width: 28, height: 22)
+        container.addSubview(open)
+    }
+
+    func show() {
+        guard let screen = NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let x = visible.midX - 110
+        let y = visible.maxY + 2
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.orderFrontRegardless()
+        startClock()
+    }
+
+    func hide() { panel.orderOut(nil) }
+    var isVisible: Bool { panel.isVisible }
+
+    private func startClock() {
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.timeLabel.stringValue = Self.timeNow()
+        }
+        timeLabel.stringValue = Self.timeNow()
+    }
+    private static func timeNow() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: Date())
+    }
+    func setClipCount(_ n: Int) { clipLabel.stringValue = "📋 \(n)" }
+
+    @objc private func playPause() { MediaController.send(.toggle) }
+    @objc private func openShelf() { onToggle?() }
 }
 
 // MARK: - App Delegate (Menu Bar)
@@ -228,31 +419,42 @@ final class TimerManager: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     let statusBar = NSStatusBar.system
-    let menu = NSMenu()
     let popover = NSPopover()
     let popoverVC = PopoverViewController()
     let clipboard = ClipboardManager()
     let timerManager = TimerManager()
     var tickTimer: Timer?
+    var pill: PillController?
+    var showPill = UserDefaults.standard.bool(forKey: "showPill")
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "◰"
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-        // Popover content
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 460, height: 580)
+        popover.contentSize = NSSize(width: 480, height: 600)
         popover.contentViewController = popoverVC
         popoverVC.clipboard = clipboard
         popoverVC.timerManager = timerManager
-        popoverVC.media = MediaController.self
-        // Start services
+        popoverVC.onPillToggle = { [weak self] in self?.togglePill() }
         clipboard.start()
         timerManager.start()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.timerManager.tick()
         }
+        if showPill { togglePill() }
+    }
+
+    func togglePill() {
+        if let p = pill {
+            p.hide(); pill = nil; showPill = false
+        } else {
+            let p = PillController(onToggle: { [weak self] in self?.togglePopover() })
+            p.show(); pill = p; showPill = true
+        }
+        UserDefaults.standard.set(showPill, forKey: "showPill")
+        popoverVC.refreshPillState(showPill)
     }
 
     @objc func togglePopover() {
@@ -273,27 +475,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     weak var clipboard: ClipboardManager?
     weak var timerManager: TimerManager?
-    var media: MediaController.Type!
+    var onPillToggle: (() -> Void)?
     let tabs = ["Clipboard", "Files", "Timers", "Media", "Settings"]
     var currentTab = 0
     var tabButtons: [NSButton] = []
-    let stack = NSStackView()
     let searchField = NSTextField()
     let clipTable = NSTableView()
-    let fileList = NSTableView()
+    let fileTable = NSTableView()
     let timerList = NSTableView()
     var timerLabelField: NSTextField!
     var timerMinutesField: NSTextField!
     var statusLabel: NSTextField!
     var launchAtLogin: NSButton!
+    var pillToggle: NSButton!
+    var icloudLabel: NSTextField!
+    var dropView: DropView!
+    var mediaRow: NSStackView!
+    var timerAdd: NSStackView!
 
     override func loadView() {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 580))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 600))
         v.wantsLayer = true
         v.layer?.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 1.0).cgColor
 
         // Header
-        let header = NSView(frame: NSRect(x: 0, y: 540, width: 460, height: 40))
+        let header = NSView(frame: NSRect(x: 0, y: 560, width: 480, height: 40))
         header.wantsLayer = true
         header.layer?.backgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1.0).cgColor
         v.addSubview(header)
@@ -304,12 +510,18 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         title.frame = NSRect(x: 16, y: 10, width: 200, height: 22)
         header.addSubview(title)
 
+        icloudLabel = NSTextField(labelWithString: Storage.shared.usingICloud ? "☁️ iCloud" : "⚠️ Local only")
+        icloudLabel.font = NSFont.systemFont(ofSize: 11)
+        icloudLabel.textColor = Storage.shared.usingICloud ? NSColor(calibratedRed: 0.4, green: 0.85, blue: 0.5, alpha: 1) : NSColor.systemOrange
+        icloudLabel.frame = NSRect(x: 380, y: 12, width: 90, height: 18)
+        header.addSubview(icloudLabel)
+
         // Tabs
         let tabStack = NSStackView()
         tabStack.orientation = .horizontal
         tabStack.distribution = .fillEqually
         tabStack.spacing = 0
-        tabStack.frame = NSRect(x: 0, y: 500, width: 460, height: 36)
+        tabStack.frame = NSRect(x: 0, y: 520, width: 480, height: 36)
         for (i, t) in tabs.enumerated() {
             let b = NSButton(title: t, target: self, action: #selector(switchTab(_:)))
             b.tag = i
@@ -327,94 +539,109 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         // Search
         searchField.placeholderString = "Search clipboard…"
         searchField.delegate = self
-        searchField.frame = NSRect(x: 12, y: 466, width: 436, height: 26)
+        searchField.frame = NSRect(x: 12, y: 486, width: 456, height: 26)
         searchField.bezelStyle = .roundedBezel
         v.addSubview(searchField)
 
-        // Table
+        // Tables
         configureTable(clipTable)
-        configureTable(fileList)
+        configureTable(fileTable)
         configureTable(timerList)
-        stack.addArrangedSubview(clipTable)
-        stack.addArrangedSubview(fileList)
-        stack.addArrangedSubview(timerList)
-        stack.frame = NSRect(x: 0, y: 60, width: 460, height: 400)
-        stack.orientation = .vertical
-        v.addSubview(stack)
-        clipTable.isHidden = false
-        fileList.isHidden = true
-        timerList.isHidden = true
+        clipTable.frame = NSRect(x: 0, y: 120, width: 480, height: 360)
+        fileTable.frame = NSRect(x: 0, y: 120, width: 480, height: 320)
+        timerList.frame = NSRect(x: 0, y: 120, width: 480, height: 320)
+        v.addSubview(clipTable)
+        v.addSubview(fileTable)
+        v.addSubview(timerList)
+
+        // Drop zone (Files tab)
+        dropView = DropView(frame: NSRect(x: 12, y: 448, width: 456, height: 62))
+        dropView.label = "Drop files here → saved to iCloud Drive"
+        dropView.onDrop = { [weak self] url in
+            _ = Storage.shared.importDrop(from: url)
+            self?.fileTable.reloadData()
+            self?.statusLabel.stringValue = "Imported \(url.lastPathComponent) → iCloud Drops"
+        }
+        dropView.isHidden = true
+        v.addSubview(dropView)
 
         // Media buttons row
-        let mediaRow = NSStackView()
-        mediaRow.orientation = .horizontal
-        mediaRow.distribution = .fillEqually
-        mediaRow.spacing = 8
-        mediaRow.frame = NSRect(x: 12, y: 60, width: 436, height: 40)
-        for (label, cmd) in [("⏮", MediaCommand.previous), ("⏯", MediaCommand.toggle), ("⏭", MediaCommand.next)] {
+        let mediaRowLocal = NSStackView()
+        mediaRowLocal.orientation = .horizontal
+        mediaRowLocal.distribution = .fillEqually
+        mediaRowLocal.spacing = 8
+        mediaRowLocal.frame = NSRect(x: 12, y: 80, width: 456, height: 40)
+        let mediaCmds: [(String, MediaCommand)] = [("⏮", .previous), ("⏯", .toggle), ("⏭", .next)]
+        for (i, (label, _)) in mediaCmds.enumerated() {
             let b = NSButton(title: label, target: self, action: #selector(mediaButton(_:)))
-            b.tag = ["previous", "toggle", "next"].firstIndex(of: cmd.rawValue) ?? 0
+            b.tag = i
             b.bezelStyle = .rounded
             b.font = NSFont.systemFont(ofSize: 18)
-            mediaRow.addArrangedSubview(b)
+            mediaRowLocal.addArrangedSubview(b)
         }
-        mediaRow.isHidden = true
-        v.addSubview(mediaRow)
-        stack.addArrangedSubview(mediaRow)
-        self.mediaRow = mediaRow
+        mediaRowLocal.isHidden = true
+        v.addSubview(mediaRowLocal)
+        self.mediaRow = mediaRowLocal
 
         // Timer add row
-        let timerAdd = NSStackView()
-        timerAdd.orientation = .horizontal
-        timerAdd.spacing = 6
-        timerAdd.frame = NSRect(x: 12, y: 12, width: 436, height: 40)
+        let timerAddLocal = NSStackView()
+        timerAddLocal.orientation = .horizontal
+        timerAddLocal.spacing = 6
+        timerAddLocal.frame = NSRect(x: 12, y: 36, width: 456, height: 40)
         timerLabelField = NSTextField(string: "")
         timerLabelField.placeholderString = "Label"
         timerLabelField.bezelStyle = .roundedBezel
-        timerLabelField.frame = NSRect(x: 0, y: 8, width: 140, height: 24)
+        timerLabelField.frame = NSRect(x: 0, y: 8, width: 160, height: 24)
         timerMinutesField = NSTextField(string: "25")
         timerMinutesField.bezelStyle = .roundedBezel
-        timerMinutesField.frame = NSRect(x: 150, y: 8, width: 60, height: 24)
+        timerMinutesField.frame = NSRect(x: 170, y: 8, width: 60, height: 24)
         let addBtn = NSButton(title: "Add Timer", target: self, action: #selector(addTimer))
         addBtn.bezelStyle = .rounded
-        addBtn.frame = NSRect(x: 220, y: 8, width: 100, height: 24)
-        timerAdd.addArrangedSubview(timerLabelField)
-        timerAdd.addArrangedSubview(timerMinutesField)
-        timerAdd.addArrangedSubview(addBtn)
-        timerAdd.isHidden = true
-        v.addSubview(timerAdd)
-        self.timerAdd = timerAdd
+        addBtn.frame = NSRect(x: 240, y: 8, width: 110, height: 24)
+        timerAddLocal.addArrangedSubview(timerLabelField)
+        timerAddLocal.addArrangedSubview(timerMinutesField)
+        timerAddLocal.addArrangedSubview(addBtn)
+        timerAddLocal.isHidden = true
+        v.addSubview(timerAddLocal)
+        self.timerAdd = timerAddLocal
 
-        // Settings row
+        // Settings rows
         launchAtLogin = NSButton(checkboxWithTitle: "Launch Shelf at login", target: self, action: #selector(toggleLaunchAtLogin))
-        launchAtLogin.frame = NSRect(x: 16, y: 16, width: 300, height: 22)
+        launchAtLogin.frame = NSRect(x: 16, y: 130, width: 300, height: 22)
         launchAtLogin.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         launchAtLogin.isHidden = true
         v.addSubview(launchAtLogin)
-        self.launchAtLoginRef = launchAtLogin
+
+        pillToggle = NSButton(checkboxWithTitle: "Show floating pill (Dynamic Island style)", target: self, action: #selector(togglePillBtn))
+        pillToggle.frame = NSRect(x: 16, y: 102, width: 300, height: 22)
+        pillToggle.state = UserDefaults.standard.bool(forKey: "showPill") ? .on : .off
+        pillToggle.isHidden = true
+        v.addSubview(pillToggle)
 
         // Footer status
         statusLabel = NSTextField(labelWithString: "Ready")
         statusLabel.textColor = NSColor(white: 0.6, alpha: 1)
         statusLabel.font = NSFont.systemFont(ofSize: 10)
-        statusLabel.frame = NSRect(x: 12, y: 0, width: 436, height: 14)
+        statusLabel.frame = NSRect(x: 12, y: 0, width: 456, height: 14)
         v.addSubview(statusLabel)
 
         self.view = v
     }
 
-    var mediaRow: NSStackView!
-    var timerAdd: NSStackView!
-    var launchAtLoginRef: NSButton!
+    func refreshPillState(_ shown: Bool) {
+        pillToggle.state = shown ? .on : .off
+    }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         clipTable.reloadData()
+        fileTable.reloadData()
+        timerList.reloadData()
     }
 
     private func configureTable(_ t: NSTableView) {
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
-        col.width = 440
+        col.width = 460
         t.addTableColumn(col)
         t.headerView = nil
         t.dataSource = self
@@ -422,7 +649,6 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         t.backgroundColor = .clear
         t.target = self
         t.doubleAction = #selector(doubleClickRow)
-        t.usesAlternatingRowBackgroundColors = false
         t.rowHeight = 28
     }
 
@@ -433,14 +659,17 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             b.layer?.backgroundColor = (i == currentTab ? NSColor(calibratedRed: 0.2, green: 0.5, blue: 0.9, alpha: 1) : .clear).cgColor
         }
         clipTable.isHidden = currentTab != 0
-        fileList.isHidden = currentTab != 1
+        fileTable.isHidden = currentTab != 1
         timerList.isHidden = currentTab != 2
         searchField.isHidden = currentTab != 0
+        dropView?.isHidden = currentTab != 1
         mediaRow?.isHidden = currentTab != 3
         timerAdd?.isHidden = currentTab != 2
-        launchAtLoginRef?.isHidden = currentTab != 4
-        clipTable.reloadData()
-        timerList.reloadData()
+        launchAtLogin.isHidden = currentTab != 4
+        pillToggle.isHidden = currentTab != 4
+        if currentTab == 1 { fileTable.reloadData() }
+        if currentTab == 2 { timerList.reloadData() }
+        if currentTab == 4 { refreshPillState(UserDefaults.standard.bool(forKey: "showPill")) }
     }
 
     @objc func mediaButton(_ sender: NSButton) {
@@ -461,7 +690,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     @objc func toggleLaunchAtLogin() {
         let svc = SMAppService.mainApp
         do {
-            if launchAtLoginRef.state == .on {
+            if launchAtLogin.state == .on {
                 try svc.register()
             } else {
                 try svc.unregister()
@@ -471,12 +700,21 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    @objc func togglePillBtn() {
+        onPillToggle?()
+    }
+
     @objc func doubleClickRow() {
-        let table: NSTableView = currentTab == 0 ? clipTable : timerList
-        let row = table.clickedRow
+        let row = (currentTab == 0 ? clipTable.clickedRow : currentTab == 1 ? fileTable.clickedRow : timerList.clickedRow)
         if currentTab == 0, row >= 0, let item = clipboard?.filtered[safe: row] {
             clipboard?.copy(item)
             statusLabel.stringValue = "Copied to clipboard"
+        } else if currentTab == 1, row >= 0 {
+            let files = Storage.shared.droppedFiles()
+            if row < files.count {
+                NSWorkspace.shared.activateFileViewerSelecting([files[row]])
+                statusLabel.stringValue = "Revealed in Finder"
+            }
         } else if currentTab == 2, row >= 0, let timer = timerManager?.timers[safe: row] {
             timerManager?.cancel(timer.id)
             timerList.reloadData()
@@ -487,6 +725,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     // NSTableView
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView == clipTable { return clipboard?.filtered.count ?? 0 }
+        if tableView == fileTable { return Storage.shared.droppedFiles().count }
         if tableView == timerList { return timerManager?.timers.count ?? 0 }
         return 0
     }
@@ -498,15 +737,24 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         tf.lineBreakMode = .byTruncatingTail
         if tableView == clipTable, let item = clipboard?.filtered[safe: row] {
             tf.stringValue = item.preview
+        } else if tableView == fileTable {
+            let files = Storage.shared.droppedFiles()
+            if row < files.count {
+                let url = files[row]
+                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let size = attrs?.fileSize ?? 0
+                let formatter = ByteCountFormatter()
+                formatter.countStyle = .file
+                tf.stringValue = "📄 \(url.lastPathComponent)  (\(formatter.string(fromByteCount: Int64(size))))"
+            }
         } else if tableView == timerList, let t = timerManager?.timers[safe: row] {
             let remaining = max(0, t.fireDate.timeIntervalSinceNow)
             let m = Int(remaining) / 60
             let s = Int(remaining) % 60
             tf.stringValue = "\(t.label)  \(m):\(String(format: "%02d", s))"
         }
-        tf.frame = NSRect(x: 8, y: 4, width: 440, height: 20)
+        tf.frame = NSRect(x: 8, y: 4, width: 460, height: 20)
         cell.addSubview(tf)
-        cell.backgroundStyle = .dark
         return cell
     }
 
@@ -527,5 +775,5 @@ extension Array {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)  // Menu bar only, no dock icon
+app.setActivationPolicy(.accessory)
 app.run()
