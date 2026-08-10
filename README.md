@@ -1,67 +1,60 @@
 # Shelf
 
-An open-source macOS menu bar app inspired by [Droppy](https://getdroppy.app/). A productivity shelf in your menu bar with clipboard history, drag-drop file tray, timers, media controls, floating Dynamic Island pill, and an extensible Droplets system.
+Open-source macOS menu bar app inspired by [Droppy](https://getdroppy.app/). A productivity shelf in your menu bar with clipboard history, drag-drop file tray, timers, media controls, floating Dynamic Island pill, extensible Droplets, lock screen widgets, and Shelf Cloud (LAN share links).
 
 ## Features
 
 ### Core
-- **Clipboard manager** — text, images, files. Search, click to copy back. Persists across sessions.
-- **Drag-drop file tray** — drop any file, it copies to iCloud Drive. Reveal in Finder or share via AirDrop / Messages / Mail.
-- **Timers** — countdown timers with notifications.
-- **Media controls** — play/pause/skip from the menu bar.
-- **Launch at login** — toggleable.
-- **iCloud sync** — clips, timers, dropped files all sync to iCloud Drive.
+- **Clipboard manager** — text, images, files. Search, click to copy back.
+- **Drag-drop file tray** — drop files to copy them to iCloud Drive.
+- **Share sheet** — AirDrop / Messages / Mail / Finder.
+- **Timers** — countdown with notifications.
+- **Media controls** — play/pause/skip.
+- **iCloud sync** — clips, timers, files all in iCloud Drive.
+- **Launch at login**.
+- **Floating Dynamic Island pill** — time, clip count, play/pause.
 
-### Droplets (extension system)
-Three shipped droplets, more easy to add:
-- **🍅 Pomodoro** — 25 min focus / 5 min break with notifications
-- **🔋 Battery monitor** — checks every 30s, alerts at 20%
-- **🌤 Weather** — fetches from wttr.in (no API key needed)
+### Droplets (extension system, 7 shipped)
+- 🍅 **Pomodoro** — 25/5 min cycles with notifications
+- 🔋 **Battery monitor** — alerts at 20%
+- 🌤 **Weather** — wttr.in, no API key needed
+- 📅 **Calendar** — next upcoming event (EventKit)
+- 🌐 **Frontmost URL** — tracks Safari/Chrome tab via AppleScript
+- 💻 **System stats** — CPU + RAM via sysctl + host_statistics64
+- 📶 **Network** — SSID + ping latency
 
-Toggle droplets by double-clicking. State persists across launches.
+### Lock Screen widget overlay
+- Idle-triggered full-screen panel at `.screenSaver` level
+- Big clock, date, and live widget row (battery, weather, calendar, clip count)
+- Configurable idle threshold (default 5 min)
+- Hides on mouse movement or click
 
-### Floating pill
-Dynamic Island-style panel at top of screen: time, clipboard count, play/pause, open-shelf button. Floats over fullscreen apps.
+### Shelf Cloud (Droppy Cloud equivalent)
+- TCP server on port 8420 using `Network.framework`
+- Serves files from your iCloud `Drops/` over LAN
+- "Copy LAN link" button generates `http://<local IP>:8420/<filename>`
+- Toggle on/off from Settings
 
-## Build
-
-Requires Xcode 15+ and macOS 13+.
-
-```bash
-swift run
-```
-
-Release build:
-```bash
-swift build -c release
-cp .build/release/Shelf /usr/local/bin/shelf
-```
-
-## Storage layout
+## Storage
 
 ```
 ~/Library/Mobile Documents/com~apple~CloudDocs/Shelf/
 ├── clips.json        # clipboard history
 ├── timers.json       # active timers
-├── clipImages/       # captured image clipboard items
-└── Drops/            # files dropped into the tray
+├── clipImages/       # image clipboard items
+└── Drops/            # files dropped into tray (sync source for Shelf Cloud)
 ```
 
-Falls back to `~/Library/Application Support/Shelf/` if iCloud unavailable.
+## Build
 
-## Architecture
+Requires Xcode 15+, macOS 13+.
 
-- `Storage` — iCloud-first JSON storage, automatic dir creation.
-- `ClipboardManager` — polls `NSPasteboard.general` every 0.7s.
-- `TimerManager` — `Timer.scheduledTimer` ticker, `UNUserNotificationCenter` for alerts.
-- `MediaController` — AppleScript keystrokes for media keys.
-- `DropletManager` + `Droplet` protocol — extensible droplet system.
-- `DropView` — drag destination with visual feedback, copies to iCloud.
-- `PillController` — `NSPanel` at `.statusBar` level, `fullScreenAuxiliary` collectionBehavior.
-- `PopoverViewController` — 6 tabs: Clipboard / Files / Timers / Media / Droplets / Settings.
-- `AppDelegate` — `NSStatusItem` with `NSPopover`, accessory activation policy (no dock).
+```bash
+swift run                              # debug
+swift build -c release                 # release
+```
 
-## Adding your own Droplet
+## Adding a Droplet
 
 ```swift
 final class MyDroplet: Droplet {
@@ -70,13 +63,23 @@ final class MyDroplet: Droplet {
     let icon = "✨"
     var enabled: Bool = UserDefaults.standard.bool(forKey: "droplet.my")
     private(set) var statusText = "Idle"
-
-    func start() { /* start timers, work, etc. */ }
+    func start() { /* work */ }
     func stop() { /* cleanup */ }
 }
 ```
 
-Then add it to `DropletManager.shared.droplets`.
+Add to `DropletManager.shared.droplets` array.
+
+## Test results (v4)
+
+```
+[1] App start: OK
+[2] iCloud Drops/ exists: True
+[3] Test file dropped: True
+[4] Shelf Cloud port 8420: OK (reachable)
+[5] HTTP GET serves file: OK (2500 bytes, matches: True)
+[6] HTTP GET 404: OK (code=404)
+```
 
 ## License
 
