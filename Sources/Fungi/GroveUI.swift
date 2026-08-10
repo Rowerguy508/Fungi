@@ -7,6 +7,10 @@ extension PopoverViewController {
 
     private func makePane(in parent: NSView) -> NSView {
         let pane = NSView(frame: NSRect(x: 14, y: 16, width: 368, height: 408))
+        // Opaque background so Grove/Trellis/etc. panes stay legible against the
+        // content card's glass effect. Slightly darker than humus to differentiate.
+        pane.wantsLayer = true
+        pane.layer?.backgroundColor = FungiTheme.canopy.cgColor
         parent.addSubview(pane)
         return pane
     }

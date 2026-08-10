@@ -1243,6 +1243,14 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         refreshICloudBadge()
 
         // --- Sidebar nav ---
+        // Solid backdrop behind the sidebar so the tab labels are readable
+        // regardless of the wallpaper. Goes underneath the nav stack.
+        let sidebarBackdrop = NSView(frame: NSRect(x: 12, y: 130, width: 110, height: 440))
+        sidebarBackdrop.wantsLayer = true
+        sidebarBackdrop.layer?.backgroundColor = FungiTheme.humus.cgColor
+        sidebarBackdrop.layer?.cornerRadius = 8
+        v.addSubview(sidebarBackdrop)
+
         let nav = NSStackView()
         nav.orientation = .vertical
         nav.alignment = .leading
@@ -1268,6 +1276,14 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         // --- Content card (everything except footer lives in here) ---
         let content = GlassCard(frame: NSRect(x: 132, y: 130, width: 396, height: 440))
         content.material = .hudWindow
+        // Solid backdrop so Grove/Trellis/etc. panes are legible on any wallpaper.
+        // We layer a humus-tone opaque view underneath the glass card so the
+        // visual effect stays, but text/sliders always have a solid surface.
+        let contentBackdrop = NSView(frame: content.bounds)
+        contentBackdrop.wantsLayer = true
+        contentBackdrop.layer?.backgroundColor = FungiTheme.humus.cgColor
+        contentBackdrop.autoresizingMask = [.width, .height]
+        content.addSubview(contentBackdrop, positioned: .below, relativeTo: nil)
         v.addSubview(content)
 
         // Each tab's content is added to `content` then hidden/shown
@@ -1321,9 +1337,14 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         for (i, b) in tabButtons.enumerated() {
             let active = (i == currentTab.rawValue)
             b.contentTintColor = active ? FungiTheme.ink : FungiTheme.fog
+            // Active tab gets a clearly opaque cap-tone fill so it pops;
+            // inactive tabs get a subtle 6% white wash so each row is still
+            // discernible as a clickable target, even on busy wallpapers.
             b.layer?.backgroundColor = (active
-                ? FungiTheme.cap.withAlphaComponent(0.25)
-                : .clear).cgColor
+                ? FungiTheme.cap.withAlphaComponent(0.55)
+                : NSColor(calibratedWhite: 1.0, alpha: 0.06)).cgColor
+            b.layer?.borderWidth = active ? 1 : 0
+            b.layer?.borderColor = FungiTheme.spore.withAlphaComponent(active ? 0.85 : 0).cgColor
         }
     }
 
