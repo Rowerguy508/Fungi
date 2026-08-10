@@ -8,6 +8,8 @@ import AVFoundation
 import MediaPlayer
 import Security
 import IOKit.ps
+import EventKit
+import Network
 
 // MARK: - Models
 
@@ -528,7 +530,7 @@ final class WeatherDroplet: Droplet {
 
 final class DropletManager {
     static let shared = DropletManager()
-    let droplets: [Droplet] = [PomodoroDroplet(), BatteryDroplet(), WeatherDroplet()]
+    let droplets: [Droplet] = [PomodoroDroplet(), BatteryDroplet(), WeatherDroplet(), CalendarDroplet(), FrontmostURLDroplet(), SystemStatsDroplet(), NetworkDroplet()]
     var refreshUI: (() -> Void)?
     private init() {
         for d in droplets where d.enabled { d.start() }
@@ -538,6 +540,400 @@ final class DropletManager {
         if d.enabled { d.start() } else { d.stop() }
         refreshUI?()
     }
+}
+
+// MARK: - Calendar droplet (EventKit)
+
+final class CalendarDroplet: Droplet {
+    let id = "calendar"
+    let name = "Calendar"
+    let icon = "📅"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.calendar") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.calendar") } }
+    private(set) var statusText = "Next event: —"
+    private let store = EKEventStore()
+    private var timer: Timer?
+
+    func start() {
+        if #available(macOS 14.0, *) {
+            store.requestFullAccessToEvents { [weak self] granted, _ in
+                guard let self else { return }
+                if granted { self.refresh() }
+                else { self.statusText = "Calendar access denied — check System Settings" }
+            }
+        } else {
+            store.requestAccess(to: .event) { [weak self] granted, _ in
+                guard let self else { return }
+                if granted { self.refresh() } else { self.statusText = "Calendar access denied" }
+            }
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+    func stop() { timer?.invalidate(); timer = nil; statusText = "Calendar off" }
+
+    private func refresh() {
+        let start = Date()
+        let end = start.addingTimeInterval(7 * 86400)
+        let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let events = store.events(matching: pred).filter { $0.startDate > start }.sorted { $0.startDate < $1.startDate }
+        if let next = events.first {
+            let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
+            statusText = "\(next.title) @ \(f.string(from: next.startDate))"
+        } else {
+            statusText = "No upcoming events"
+        }
+    }
+}
+
+// MARK: - Frontmost URL droplet (Safari/Chrome)
+
+final class FrontmostURLDroplet: Droplet {
+    let id = "frontmost-url"
+    let name = "Frontmost URL"
+    let icon = "🌐"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.frontmost-url") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.frontmost-url") } }
+    private(set) var statusText = "URL: —"
+    private var timer: Timer?
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
+        refresh()
+    }
+    func stop() { timer?.invalidate(); timer = nil; statusText = "URL monitor off" }
+
+    private func refresh() {
+        let script = """
+        tell application "System Events"
+            set frontApp to name of first application process whose frontmost is true
+        end tell
+        if frontApp is "Safari" then
+            tell application "Safari" to return URL of front document
+        else if frontApp is "Google Chrome" or frontApp is "Chromium" then
+            tell application frontApp to return URL of active tab of front window
+        else
+            return frontApp
+        end if
+        """
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
+        let pipe = Pipe(); task.standardOutput = pipe; task.standardError = Pipe()
+        do { try task.run() } catch { statusText = "URL: error"; return }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if out.hasPrefix("http") {
+            let short = out.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "")
+            statusText = "URL: \(short)"
+        } else if !out.isEmpty {
+            statusText = "App: \(out)"
+        }
+    }
+}
+
+// MARK: - System stats droplet
+
+final class SystemStatsDroplet: Droplet {
+    let id = "system-stats"
+    let name = "System stats"
+    let icon = "💻"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.system-stats") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.system-stats") } }
+    private(set) var statusText = "CPU — | RAM —"
+    private var timer: Timer?
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
+        refresh()
+    }
+    func stop() { timer?.invalidate(); timer = nil; statusText = "Stats off" }
+
+    private func refresh() {
+        // CPU: load average normalized by core count
+        var load = [Double](repeating: 0, count: 3)
+        getloadavg(&load, 3)
+        var ncpu: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        sysctlbyname("hw.ncpu", &ncpu, &size, nil, 0)
+        let cpuPct = ncpu > 0 ? min(100, Int(load[0] / Double(ncpu) * 100)) : 0
+
+        // RAM via host_statistics64
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        if kr == KERN_SUCCESS {
+            let total = Double(stats.active_count + stats.inactive_count + stats.wire_count + stats.free_count) * Double(pageSize)
+            let used = Double(stats.active_count + stats.inactive_count + stats.wire_count) * Double(pageSize)
+            let ramPct = total > 0 ? Int(used / total * 100) : 0
+            statusText = "CPU \(cpuPct)% | RAM \(ramPct)%"
+        } else {
+            statusText = "CPU \(cpuPct)%"
+        }
+    }
+}
+
+// MARK: - Network droplet (SSID + latency)
+
+final class NetworkDroplet: Droplet {
+    let id = "network"
+    let name = "Network"
+    let icon = "📶"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.network") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.network") } }
+    private(set) var statusText = "WiFi —"
+    private var timer: Timer?
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.refresh() }
+        refresh()
+    }
+    func stop() { timer?.invalidate(); timer = nil; statusText = "Network off" }
+
+    private func refresh() {
+        // SSID via networksetup
+        let ssidTask = Process()
+        ssidTask.launchPath = "/usr/sbin/networksetup"
+        ssidTask.arguments = ["-getairportnetwork", "en0"]
+        let pipe = Pipe(); ssidTask.standardOutput = pipe; ssidTask.standardError = Pipe()
+        try? ssidTask.run()
+        let ssidData = pipe.fileHandleForReading.readDataToEndOfFile()
+        let ssidOut = String(data: ssidData, encoding: .utf8) ?? ""
+        let ssid = ssidOut.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
+
+        // Latency: ping 1.1.1.1 once
+        let ping = Process()
+        ping.launchPath = "/sbin/ping"
+        ping.arguments = ["-c", "1", "-t", "2", "1.1.1.1"]
+        let p2 = Pipe(); ping.standardOutput = p2; ping.standardError = Pipe()
+        try? ping.run()
+        let pingData = p2.fileHandleForReading.readDataToEndOfFile()
+        let pingOut = String(data: pingData, encoding: .utf8) ?? ""
+        if let range = pingOut.range(of: "time="), let end = pingOut[range.upperBound...].firstIndex(of: " ") {
+            let ms = pingOut[range.upperBound..<end]
+            statusText = "\(ssid) · \(ms)ms"
+        } else {
+            statusText = "\(ssid) · offline"
+        }
+    }
+}
+
+// MARK: - Shelf Cloud (LAN share links + iCloud share sheet)
+
+final class ShelfCloud {
+    static let shared = ShelfCloud()
+    var isRunning = false
+    private var listener: NWListener?
+    private var statusChanged: (() -> Void)?
+
+    func start(statusChanged: @escaping () -> Void) {
+        self.statusChanged = statusChanged
+        do {
+            listener = try NWListener(using: .tcp, on: 8420)
+            listener?.newConnectionHandler = { [weak self] conn in
+                self?.handle(conn)
+            }
+            listener?.start(queue: .global())
+            isRunning = true
+        } catch {
+            isRunning = false
+        }
+        statusChanged()
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+        isRunning = false
+        statusChanged?()
+    }
+
+    /// Serve one HTTP GET and close. Files served from Drops dir.
+    private func handle(_ conn: NWConnection) {
+        conn.start(queue: .global())
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
+            guard let self, let data, let raw = String(data: data, encoding: .utf8) else { conn.cancel(); return }
+            let line = raw.components(separatedBy: "\r\n").first ?? ""
+            let parts = line.split(separator: " ")
+            guard parts.count >= 2, parts[0] == "GET", let drops = Storage.shared.dropsDir else {
+                self.http(conn, code: 400, body: "bad request")
+                return
+            }
+            // URL-decoded path: /<filename>
+            var path = String(parts[1])
+            if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
+            path = path.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? path
+            let name = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let file = drops.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: file.path) else {
+                self.http(conn, code: 404, body: "not found")
+                return
+            }
+            guard let body = try? Data(contentsOf: file) else {
+                self.http(conn, code: 500, body: "read error")
+                return
+            }
+            var head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"\(name)\"\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+            var response = Data(head.utf8)
+            response.append(body)
+            conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+        }
+    }
+
+    private func http(_ conn: NWConnection, code: Int, body: String) {
+        let msg = "HTTP/1.1 \(code) \(code == 200 ? "OK" : "Error")\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
+        conn.send(content: Data(msg.utf8), completion: .contentProcessed { _ in conn.cancel() })
+    }
+
+    /// A share link for a given filename served over LAN. Returns nil if not running.
+    func link(for name: String) -> String? {
+        guard isRunning, let ip = localIP() else { return nil }
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        return "http://\(ip):8420/\(encoded)"
+    }
+
+    private func localIP() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return nil }
+        var ptr = ifaddr
+        while ptr != nil {
+            let interface = ptr!.pointee
+            let family = interface.ifa_addr.pointee.sa_family
+            if family == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" || name == "en1" {
+                    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+                    address = String(cString: host)
+                }
+            }
+            ptr = interface.ifa_next
+        }
+        freeifaddrs(ifaddr)
+        return address
+    }
+}
+
+// MARK: - Lock Screen Widget Overlay (idle-triggered, like Droppy lock screen)
+
+final class LockScreenController {
+    static let shared = LockScreenController()
+    var enabled = UserDefaults.standard.bool(forKey: "lockScreen.enabled") { didSet { UserDefaults.standard.set(enabled, forKey: "lockScreen.enabled") } }
+    var idleMinutes = UserDefaults.standard.integer(forKey: "lockScreen.idleMinutes") == 0 ? 5 : UserDefaults.standard.integer(forKey: "lockScreen.idleMinutes")
+    private var panel: NSPanel?
+    private var idleTimer: Timer?
+    private var clockTimer: Timer?
+    private var shown = false
+
+    func startMonitoring() {
+        idleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.checkIdle()
+        }
+    }
+
+    private func checkIdle() {
+        guard enabled else { if shown { hide() }; return }
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
+        if idle >= Double(idleMinutes * 60), !shown {
+            show()
+        } else if idle < 10, shown {
+            hide()
+        }
+    }
+
+    func show() {
+        guard let screen = NSScreen.main, !shown else { return }
+        let frame = screen.frame
+        let p = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.level = .screenSaver
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+
+        let v = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
+        v.material = .hudWindow
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 0.6).cgColor
+        p.contentView = v
+
+        // Big clock
+        let time = NSTextField(labelWithString: "")
+        time.font = NSFont.monospacedDigitSystemFont(ofSize: 96, weight: .thin)
+        time.textColor = .white
+        time.alignment = .center
+        time.frame = NSRect(x: 0, y: frame.height / 2 - 60, width: frame.width, height: 110)
+        v.addSubview(time)
+
+        // Date
+        let date = NSTextField(labelWithString: "")
+        date.font = NSFont.systemFont(ofSize: 22, weight: .medium)
+        date.textColor = NSColor(white: 0.85, alpha: 1)
+        date.alignment = .center
+        date.frame = NSRect(x: 0, y: frame.height / 2 - 90, width: frame.width, height: 30)
+        v.addSubview(date)
+
+        // Widgets row (battery, weather, calendar, clips)
+        let widgets = NSStackView()
+        widgets.orientation = .horizontal
+        widgets.distribution = .fillEqually
+        widgets.spacing = 16
+        widgets.frame = NSRect(x: 40, y: 80, width: frame.width - 80, height: 90)
+        v.addSubview(widgets)
+
+        let batteryLbl = widgetLabel("🔋 --")
+        let weatherLbl = widgetLabel("🌤 --")
+        let calLbl = widgetLabel("📅 --")
+        let clipsLbl = widgetLabel("📋 0")
+        for w in [batteryLbl, weatherLbl, calLbl, clipsLbl] { widgets.addArrangedSubview(w) }
+
+        p.orderFrontRegardless()
+        panel = p
+        shown = true
+
+        let tf = DateFormatter(); tf.dateFormat = "HH:mm"
+        let df = DateFormatter(); df.dateFormat = "EEEE, MMMM d"
+        time.stringValue = tf.string(from: Date())
+        date.stringValue = df.string(from: Date())
+
+        clockTimer?.invalidate()
+        clockTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, self.shown else { return }
+            time.stringValue = tf.string(from: Date())
+            date.stringValue = df.string(from: Date())
+            let droplets = DropletManager.shared.droplets
+            for d in droplets {
+                if d.id == "battery" && d.enabled { batteryLbl.stringValue = "🔋 \(d.statusText)" }
+                if d.id == "weather" && d.enabled { weatherLbl.stringValue = "🌤 \(d.statusText)" }
+                if d.id == "calendar" && d.enabled { calLbl.stringValue = "📅 \(d.statusText)" }
+            }
+            clipsLbl.stringValue = "📋 \(self.clipCount)"
+        }
+    }
+
+    var clipCount = 0
+    var isShown: Bool { shown }
+
+    func hide() {
+        clockTimer?.invalidate(); clockTimer = nil
+        panel?.orderOut(nil)
+        panel = nil
+        shown = false
+    }
+}
+
+private func widgetLabel(_ text: String) -> NSTextField {
+    let l = NSTextField(labelWithString: text)
+    l.font = NSFont.systemFont(ofSize: 15, weight: .medium)
+    l.textColor = .white
+    l.alignment = .center
+    l.lineBreakMode = .byTruncatingTail
+    return l
 }
 
 // MARK: - App Delegate (Menu Bar)
@@ -567,8 +963,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboard.start()
         timerManager.start()
         _ = DropletManager.shared
+        LockScreenController.shared.startMonitoring()
+        ShelfCloud.shared.start { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.popoverVC.refreshCloudStateSafe()
+            }
+        }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.timerManager.tick()
+            self?.popoverVC.updateClipCount(self?.clipboard.items.count ?? 0)
         }
         if showPill { togglePill() }
         // Refresh droplet status every 5s so the UI shows live updates
@@ -627,6 +1031,11 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     var dropletTable: NSTableView!
     var shareButton: NSButton!
     var dropletHint: NSTextField!
+    var cloudLinkBtn: NSButton!
+    var cloudStatusLabel: NSTextField!
+    var cloudToggleButton: NSButton!
+    var lockScreenToggle: NSButton!
+    var lockScreenHint: NSTextField!
 
     override func loadView() {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 600))
@@ -707,6 +1116,41 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         shareButton.frame = NSRect(x: 12, y: 416, width: 100, height: 26)
         shareButton.isHidden = true
         v.addSubview(shareButton)
+
+        // Cloud share-link button (next to Share…)
+        let cloudLinkBtn = NSButton(title: "🔗 Copy LAN link", target: self, action: #selector(copyShareLink))
+        cloudLinkBtn.bezelStyle = .rounded
+        cloudLinkBtn.font = NSFont.systemFont(ofSize: 12)
+        cloudLinkBtn.frame = NSRect(x: 120, y: 416, width: 160, height: 26)
+        cloudLinkBtn.isHidden = true
+        v.addSubview(cloudLinkBtn)
+        self.cloudLinkBtn = cloudLinkBtn
+
+        // Cloud status row (Settings tab)
+        cloudStatusLabel = NSTextField(labelWithString: "Shelf Cloud: starting…")
+        cloudStatusLabel.font = NSFont.systemFont(ofSize: 11)
+        cloudStatusLabel.textColor = NSColor(white: 0.7, alpha: 1)
+        cloudStatusLabel.frame = NSRect(x: 12, y: 380, width: 456, height: 16)
+        cloudStatusLabel.isHidden = true
+        v.addSubview(cloudStatusLabel)
+
+        cloudToggleButton = NSButton(checkboxWithTitle: "Enable Shelf Cloud (LAN share links)", target: self, action: #selector(toggleCloud))
+        cloudToggleButton.frame = NSRect(x: 12, y: 360, width: 320, height: 20)
+        cloudToggleButton.isHidden = true
+        v.addSubview(cloudToggleButton)
+
+        // Lock screen widget toggle (Settings tab)
+        lockScreenToggle = NSButton(checkboxWithTitle: "Show lock screen widgets when idle", target: self, action: #selector(toggleLockScreen))
+        lockScreenToggle.frame = NSRect(x: 12, y: 330, width: 320, height: 20)
+        lockScreenToggle.isHidden = true
+        v.addSubview(lockScreenToggle)
+
+        lockScreenHint = NSTextField(labelWithString: "Idle threshold: 5 min (set via UserDefaults lockScreen.idleMinutes)")
+        lockScreenHint.font = NSFont.systemFont(ofSize: 10)
+        lockScreenHint.textColor = NSColor(white: 0.6, alpha: 1)
+        lockScreenHint.frame = NSRect(x: 12, y: 312, width: 456, height: 14)
+        lockScreenHint.isHidden = true
+        v.addSubview(lockScreenHint)
 
         // Droplets table
         dropletTable = NSTableView()
@@ -829,12 +1273,23 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         searchField.isHidden = currentTab != 0
         dropView?.isHidden = currentTab != 1
         shareButton?.isHidden = currentTab != 1
+        cloudLinkBtn?.isHidden = currentTab != 1
         mediaRow?.isHidden = currentTab != 3
         timerAdd?.isHidden = currentTab != 2
         dropletTable.isHidden = currentTab != 4
         dropletHint.isHidden = currentTab != 4
         launchAtLogin.isHidden = currentTab != 5
         pillToggle.isHidden = currentTab != 5
+        cloudStatusLabel.isHidden = currentTab != 5
+        cloudToggleButton.isHidden = currentTab != 5
+        lockScreenToggle.isHidden = currentTab != 5
+        lockScreenHint.isHidden = currentTab != 5
+        if currentTab == 5 {
+            refreshPillState(UserDefaults.standard.bool(forKey: "showPill"))
+            refreshCloudState()
+            cloudToggleButton.state = (ShelfCloud.shared.isRunning ? .on : .off)
+            lockScreenToggle.state = (LockScreenController.shared.enabled ? .on : .off)
+        }
         if currentTab == 1 { fileTable.reloadData() }
         if currentTab == 2 { timerList.reloadData() }
         if currentTab == 4 { dropletTable.reloadData() }
@@ -911,6 +1366,61 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             let anchor = view.window?.contentView ?? view
             picker.show(relativeTo: NSZeroRect, of: anchor, preferredEdge: .minY)
         }
+    }
+
+    @objc func copyShareLink() {
+        let pick = NSOpenPanel()
+        pick.canChooseFiles = true
+        pick.allowsMultipleSelection = false
+        pick.directoryURL = Storage.shared.dropsDir
+        pick.message = "Select a file to generate a LAN share link"
+        guard pick.runModal() == .OK, let url = pick.url else { return }
+        guard let link = ShelfCloud.shared.link(for: url.lastPathComponent) else {
+            statusLabel.stringValue = "Cloud not running — enable in Settings"
+            return
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(link, forType: .string)
+        statusLabel.stringValue = "Copied: \(link)"
+    }
+
+    @objc func toggleCloud() {
+        if ShelfCloud.shared.isRunning {
+            ShelfCloud.shared.stop()
+        } else {
+            ShelfCloud.shared.start { [weak self] in
+                DispatchQueue.main.async { self?.refreshCloudStateSafe() }
+            }
+        }
+    }
+
+    @objc func toggleLockScreen() {
+        LockScreenController.shared.enabled.toggle()
+        if LockScreenController.shared.enabled && !LockScreenController.shared.isShown {
+            LockScreenController.shared.show()
+        } else if !LockScreenController.shared.enabled {
+            LockScreenController.shared.hide()
+        }
+    }
+
+    func refreshCloudState() {
+        if ShelfCloud.shared.isRunning {
+            cloudStatusLabel.stringValue = "Shelf Cloud: ✓ running — share files via the link button in Files tab"
+            cloudStatusLabel.textColor = NSColor(calibratedRed: 0.4, green: 0.9, blue: 0.4, alpha: 1)
+        } else {
+            cloudStatusLabel.stringValue = "Shelf Cloud: ⏸ off — toggle below to start LAN file sharing"
+            cloudStatusLabel.textColor = NSColor(calibratedRed: 0.9, green: 0.5, blue: 0.3, alpha: 1)
+        }
+    }
+
+    /// Calls refreshCloudState only if view is loaded. Used from async callbacks.
+    func refreshCloudStateSafe() {
+        if isViewLoaded { refreshCloudState() }
+    }
+
+    func updateClipCount(_ n: Int) {
+        LockScreenController.shared.clipCount = n
     }
 
     // NSTableView
