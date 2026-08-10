@@ -1040,7 +1040,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "◰"
+        if let img = NSImage(systemSymbolName: "mushroom.fill", accessibilityDescription: "Fungi") {
+            img.isTemplate = true
+            statusItem.button?.image = img
+        } else {
+            statusItem.button?.title = "🍄"
+        }
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         popover.behavior = .transient
