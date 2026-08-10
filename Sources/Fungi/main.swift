@@ -344,7 +344,7 @@ final class PillController: NSObject {
     }
 
     private func build() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 220, height: 40),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 240, height: 40),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         panel.level = .statusBar
@@ -354,36 +354,46 @@ final class PillController: NSObject {
         panel.isMovable = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 40))
+        let container = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 240, height: 40))
+        container.material = .hudWindow
+        container.blendingMode = .behindWindow
+        container.state = .active
         container.wantsLayer = true
         container.layer?.cornerRadius = 20
-        container.layer?.backgroundColor = NSColor(calibratedRed: 0.1, green: 0.1, blue: 0.14, alpha: 0.92).cgColor
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.4).cgColor
         panel.contentView = container
 
+        // 🍄 emoji badge
+        let badge = NSTextField(labelWithString: "🍄")
+        badge.font = NSFont.systemFont(ofSize: 18)
+        badge.frame = NSRect(x: 14, y: 11, width: 26, height: 20)
+        container.addSubview(badge)
+
         timeLabel = NSTextField(labelWithString: "")
-        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-        timeLabel.textColor = .white
-        timeLabel.frame = NSRect(x: 14, y: 11, width: 70, height: 18)
+        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
+        timeLabel.textColor = FungiTheme.ink
+        timeLabel.frame = NSRect(x: 42, y: 11, width: 80, height: 18)
         container.addSubview(timeLabel)
 
         clipLabel = NSTextField(labelWithString: "📋 0")
-        clipLabel.font = NSFont.systemFont(ofSize: 12)
-        clipLabel.textColor = NSColor(white: 0.75, alpha: 1)
-        clipLabel.frame = NSRect(x: 92, y: 11, width: 60, height: 18)
+        clipLabel.font = FungiTheme.mono
+        clipLabel.textColor = FungiTheme.gill
+        clipLabel.frame = NSRect(x: 124, y: 11, width: 56, height: 18)
         container.addSubview(clipLabel)
 
         let btn = NSButton(title: "⏯", target: self, action: #selector(playPause))
         btn.isBordered = false
-        btn.font = NSFont.systemFont(ofSize: 12)
-        btn.contentTintColor = .white
-        btn.frame = NSRect(x: 158, y: 9, width: 28, height: 22)
+        btn.font = NSFont.systemFont(ofSize: 14)
+        btn.contentTintColor = FungiTheme.moss
+        btn.frame = NSRect(x: 178, y: 8, width: 28, height: 22)
         container.addSubview(btn)
 
         let open = NSButton(title: "▦", target: self, action: #selector(openFungi))
         open.isBordered = false
-        open.font = NSFont.systemFont(ofSize: 12)
-        open.contentTintColor = .white
-        open.frame = NSRect(x: 188, y: 9, width: 28, height: 22)
+        open.font = NSFont.systemFont(ofSize: 14)
+        open.contentTintColor = FungiTheme.gill
+        open.frame = NSRect(x: 206, y: 8, width: 28, height: 22)
         container.addSubview(open)
     }
 
@@ -970,11 +980,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 480, height: 600)
+        popover.contentSize = NSSize(width: 540, height: 660)
         popover.contentViewController = popoverVC
         popoverVC.clipboard = clipboard
         popoverVC.timerManager = timerManager
-        popoverVC.onPillToggle = { [weak self] in self?.togglePill() }
         clipboard.start()
         timerManager.start()
         _ = SporeManager.shared
@@ -987,12 +996,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.timerManager.tick()
-            self?.popoverVC.updateClipCount(self?.clipboard.items.count ?? 0)
         }
         if showPill { togglePill() }
-        // Refresh spore status every 5s so the UI shows live updates
+        // Refresh spore status every 5s while the fairy ring is open
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self = self, self.popoverVC.currentTab == 4 else { return }
+            guard let self = self, self.popoverVC.currentTab == .fairyring else { return }
             self.popoverVC.sporeTable.reloadData()
         }
     }
@@ -1005,7 +1013,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             p.show(); pill = p; showPill = true
         }
         UserDefaults.standard.set(showPill, forKey: "showPill")
-        popoverVC.refreshPillState(showPill)
     }
 
     @objc func togglePopover() {
@@ -1026,192 +1033,369 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     weak var clipboard: ClipboardManager?
     weak var timerManager: TimerManager?
-    var onPillToggle: (() -> Void)?
-    let tabs = ["Clipboard", "Files", "Timers", "Media", "Spores", "Settings"]
-    var currentTab = 0
+
+    // Fungi vocabulary
+    enum Tab: Int, CaseIterable {
+        case burrow, pantry, basket, timers, media, fairyring, settings
+        var title: String {
+            switch self {
+            case .burrow: return "Burrow"
+            case .pantry: return "Pantry"
+            case .basket: return "Basket"
+            case .timers: return "Timers"
+            case .media: return "Media"
+            case .fairyring: return "Fairy Ring"
+            case .settings: return "Settings"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .burrow: return "🍄"
+            case .pantry: return "📋"
+            case .basket: return "🧺"
+            case .timers: return "⏱"
+            case .media: return "🎵"
+            case .fairyring: return "🪄"
+            case .settings: return "⚙"
+            }
+        }
+    }
+    var currentTab: Tab = .burrow
     var tabButtons: [NSButton] = []
+
+    // Subviews
+    let header = GlassCard(frame: .zero)
+    let titleLabel = SectionLabel("The Burrow", font: FungiTheme.display)
+    let subtitleLabel = SectionLabel("A fungi takes root in your Mac", font: FungiTheme.subtitle, color: FungiTheme.fog)
+    let icloudBadge = NSTextField(labelWithString: "")
+
     let searchField = NSTextField()
     let clipTable = NSTableView()
     let fileTable = NSTableView()
     let timerList = NSTableView()
-    var timerLabelField: NSTextField!
-    var timerMinutesField: NSTextField!
-    var statusLabel: NSTextField!
-    var launchAtLogin: NSButton!
-    var pillToggle: NSButton!
-    var icloudLabel: NSTextField!
+    let sporeTable = NSTableView()
+
     var basketView: BasketView!
     var mediaRow: NSStackView!
     var timerAdd: NSStackView!
-    var sporeTable: NSTableView!
+    var timerLabelField: NSTextField!
+    var timerMinutesField: NSTextField!
+    var launchAtLogin: NSButton!
+    var pillToggle: NSButton!
     var shareButton: NSButton!
-    var sporeHint: NSTextField!
     var cloudLinkBtn: NSButton!
     var cloudStatusLabel: NSTextField!
     var cloudToggleButton: NSButton!
     var nightcapToggle: NSButton!
     var nightcapHint: NSTextField!
+    var sporeHint: NSTextField!
+    var statusLabel: NSTextField!
+
+    // Status bar
+    let footer = GlassCard(frame: .zero)
+    var footerLabel: NSTextField!
+    var footerBtn: NSButton!
 
     override func loadView() {
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 600))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 540, height: 660))
         v.wantsLayer = true
-        v.layer?.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 1.0).cgColor
+        v.layer?.backgroundColor = FungiTheme.canopy.cgColor
+        self.view = v
 
-        // Header
-        let header = NSView(frame: NSRect(x: 0, y: 560, width: 480, height: 40))
-        header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1.0).cgColor
+        // --- Header ---
+        header.frame = NSRect(x: 0, y: 580, width: 540, height: 80)
         v.addSubview(header)
 
-        let title = NSTextField(labelWithString: "Fungi")
-        title.font = NSFont.systemFont(ofSize: 16, weight: .bold)
-        title.textColor = .white
-        title.frame = NSRect(x: 16, y: 10, width: 200, height: 22)
-        header.addSubview(title)
+        let titleStack = NSStackView()
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 2
+        titleStack.frame = NSRect(x: 20, y: 14, width: 380, height: 52)
+        titleStack.addArrangedSubview(titleLabel)
+        titleStack.addArrangedSubview(subtitleLabel)
+        header.addSubview(titleStack)
 
-        icloudLabel = NSTextField(labelWithString: Storage.shared.usingICloud ? "☁️ iCloud" : "⚠️ Local only")
-        icloudLabel.font = NSFont.systemFont(ofSize: 11)
-        icloudLabel.textColor = Storage.shared.usingICloud ? NSColor(calibratedRed: 0.4, green: 0.85, blue: 0.5, alpha: 1) : NSColor.systemOrange
-        icloudLabel.frame = NSRect(x: 380, y: 12, width: 90, height: 18)
-        header.addSubview(icloudLabel)
+        icloudBadge.font = FungiTheme.mono
+        icloudBadge.textColor = FungiTheme.moss
+        icloudBadge.backgroundColor = FungiTheme.canopy.withAlphaComponent(0.5)
+        icloudBadge.drawsBackground = true
+        icloudBadge.isBezeled = false
+        icloudBadge.isEditable = false
+        icloudBadge.alignment = .center
+        icloudBadge.wantsLayer = true
+        icloudBadge.layer?.cornerRadius = 8
+        icloudBadge.frame = NSRect(x: 380, y: 28, width: 140, height: 24)
+        header.addSubview(icloudBadge)
+        refreshICloudBadge()
 
-        // Tabs
-        let tabStack = NSStackView()
-        tabStack.orientation = .horizontal
-        tabStack.distribution = .fillEqually
-        tabStack.spacing = 0
-        tabStack.frame = NSRect(x: 0, y: 520, width: 480, height: 36)
-        for (i, t) in tabs.enumerated() {
-            let b = NSButton(title: t, target: self, action: #selector(switchTab(_:)))
-            b.tag = i
+        // --- Sidebar nav ---
+        let nav = NSStackView()
+        nav.orientation = .vertical
+        nav.alignment = .leading
+        nav.spacing = 4
+        nav.frame = NSRect(x: 12, y: 130, width: 110, height: 440)
+        for tab in Tab.allCases {
+            let b = NSButton(title: "\(tab.icon)  \(tab.title)", target: self, action: #selector(switchTab(_:)))
+            b.tag = tab.rawValue
             b.bezelStyle = .inline
             b.isBordered = false
-            b.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            b.contentTintColor = (i == currentTab) ? .white : NSColor(white: 0.6, alpha: 1)
+            b.font = FungiTheme.tab
+            b.contentTintColor = FungiTheme.fog
+            b.alignment = .left
             b.wantsLayer = true
-            b.layer?.backgroundColor = (i == currentTab ? NSColor(calibratedRed: 0.2, green: 0.5, blue: 0.9, alpha: 1) : .clear).cgColor
-            tabStack.addArrangedSubview(b)
+            b.layer?.cornerRadius = 8
+            b.frame = NSRect(x: 0, y: 0, width: 110, height: 30)
             tabButtons.append(b)
+            nav.addArrangedSubview(b)
         }
-        v.addSubview(tabStack)
+        v.addSubview(nav)
+        applyTabStyles()
 
-        // Search
-        searchField.placeholderString = "Search clipboard…"
-        searchField.delegate = self
-        searchField.frame = NSRect(x: 12, y: 486, width: 456, height: 26)
+        // --- Content card (everything except footer lives in here) ---
+        let content = GlassCard(frame: NSRect(x: 132, y: 130, width: 396, height: 440))
+        content.material = .hudWindow
+        v.addSubview(content)
+
+        // Each tab's content is added to `content` then hidden/shown
+        buildBurrow(in: content)
+        buildPantry(in: content)
+        buildBasket(in: content)
+        buildTimers(in: content)
+        buildMedia(in: content)
+        buildFairyRing(in: content)
+        buildSettings(in: content)
+
+        // --- Footer ---
+        footer.frame = NSRect(x: 12, y: 12, width: 516, height: 36)
+        v.addSubview(footer)
+        footerLabel = NSTextField(labelWithString: "Ready.")
+        footerLabel.font = FungiTheme.mono
+        footerLabel.textColor = FungiTheme.fog
+        footerLabel.frame = NSRect(x: 14, y: 10, width: 380, height: 18)
+        footer.addSubview(footerLabel)
+        statusLabel = footerLabel
+        footerBtn = NSButton(title: "🍄 Open Fungi", target: self, action: #selector(openApp))
+        footerBtn.bezelStyle = .inline
+        footerBtn.isBordered = false
+        footerBtn.font = FungiTheme.subtitle
+        footerBtn.contentTintColor = FungiTheme.gill
+        footerBtn.frame = NSRect(x: 400, y: 6, width: 110, height: 24)
+        footer.addSubview(footerBtn)
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        switchTab(tabButtons[currentTab.rawValue])
+    }
+
+    func refreshICloudBadge() {
+        if Storage.shared.usingICloud {
+            icloudBadge.stringValue = " ☁ iCloud "
+            icloudBadge.textColor = FungiTheme.moss
+        } else {
+            icloudBadge.stringValue = " ☁ Local "
+            icloudBadge.textColor = FungiTheme.cap
+        }
+    }
+
+    func applyTabStyles() {
+        for (i, b) in tabButtons.enumerated() {
+            let active = (i == currentTab.rawValue)
+            b.contentTintColor = active ? FungiTheme.ink : FungiTheme.fog
+            b.layer?.backgroundColor = (active
+                ? FungiTheme.cap.withAlphaComponent(0.25)
+                : .clear).cgColor
+        }
+    }
+
+    @objc func switchTab(_ sender: NSButton) {
+        guard let tab = Tab(rawValue: sender.tag) else { return }
+        currentTab = tab
+        applyTabStyles()
+        titleLabel.stringValue = tab.title
+        switch tab {
+        case .burrow: subtitleLabel.stringValue = "A fungi takes root in your Mac"
+        case .pantry: subtitleLabel.stringValue = "Every copy, kept and searchable"
+        case .basket: subtitleLabel.stringValue = "Toss files into your basket (iCloud sync)"
+        case .timers: subtitleLabel.stringValue = "Ticking along until ready"
+        case .media: subtitleLabel.stringValue = "Music at the cap of your Mac"
+        case .fairyring: subtitleLabel.stringValue = "Pick your toadstools"
+        case .settings: subtitleLabel.stringValue = "Tune your fungi"
+        }
+        for v in [searchField, clipTable, fileTable, timerList, basketView,
+                  mediaRow, timerAdd, sporeTable, sporeHint, cloudStatusLabel,
+                  cloudToggleButton, nightcapToggle, nightcapHint,
+                  launchAtLogin, pillToggle, shareButton, cloudLinkBtn] {
+            v?.isHidden = true
+        }
+        switch tab {
+        case .burrow:
+            buildBurrowContents()
+        case .pantry:
+            searchField.isHidden = false
+            clipTable.isHidden = false
+            clipTable.reloadData()
+        case .basket:
+            basketView.isHidden = false
+            fileTable.isHidden = false
+            shareButton.isHidden = false
+            cloudLinkBtn.isHidden = false
+            fileTable.reloadData()
+        case .timers:
+            timerList.isHidden = false
+            timerAdd.isHidden = false
+            timerList.reloadData()
+        case .media:
+            mediaRow.isHidden = false
+        case .fairyring:
+            sporeTable.isHidden = false
+            sporeHint.isHidden = false
+            sporeTable.reloadData()
+        case .settings:
+            launchAtLogin.isHidden = false
+            pillToggle.isHidden = false
+            cloudStatusLabel.isHidden = false
+            cloudToggleButton.isHidden = false
+            nightcapToggle.isHidden = false
+            nightcapHint.isHidden = false
+            refreshSettings()
+        }
+    }
+
+    func refreshSettings() {
+        refreshICloudBadge()
+        refreshCloudState()
+        launchAtLogin.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+        pillToggle.state = (UserDefaults.standard.bool(forKey: "showPill")) ? .on : .off
+        cloudToggleButton.state = (SporeCloud.shared.isRunning ? .on : .off)
+        nightcapToggle.state = (NightcapController.shared.enabled ? .on : .off)
+    }
+
+    @objc func openApp() { NSApp.activate(ignoringOtherApps: true) }
+
+    // MARK: - Tab content builders
+
+    func buildBurrow(in parent: NSView) {
+        // Card shown when Burrow tab is active
+        let card = NSVisualEffectView(frame: NSRect(x: 14, y: 16, width: 368, height: 408))
+        card.material = .hudWindow
+        card.blendingMode = .behindWindow
+        card.state = .active
+        card.wantsLayer = true
+        card.layer?.cornerRadius = FungiTheme.cardRadius
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.3).cgColor
+        card.identifier = NSUserInterfaceItemIdentifier("burrowCard")
+        parent.addSubview(card)
+
+        let hero = NSTextField(labelWithString: "🍄")
+        hero.font = NSFont.systemFont(ofSize: 80)
+        hero.alignment = .center
+        hero.frame = NSRect(x: 0, y: 240, width: 368, height: 100)
+        card.addSubview(hero)
+
+        let tagline = NSTextField(labelWithString: "Fungi takes root in your Mac.")
+        tagline.font = FungiTheme.title
+        tagline.alignment = .center
+        tagline.textColor = FungiTheme.ink
+        tagline.frame = NSRect(x: 0, y: 200, width: 368, height: 22)
+        card.addSubview(tagline)
+
+        let blurb = NSTextField(labelWithString: "Drop a file into the Basket. Open a toadstool from the Fairy Ring.\nLet the Nightcap drift over your screen when idle.\n\nPress 🍄 in your menu bar to come back here.")
+        blurb.font = FungiTheme.body
+        blurb.alignment = .center
+        blurb.textColor = FungiTheme.fog
+        blurb.maximumNumberOfLines = 0
+        blurb.frame = NSRect(x: 28, y: 80, width: 312, height: 100)
+        card.addSubview(blurb)
+
+        let status = NSTextField(labelWithString: "")
+        status.font = FungiTheme.mono
+        status.alignment = .center
+        status.textColor = FungiTheme.moss
+        status.frame = NSRect(x: 28, y: 28, width: 312, height: 36)
+        status.maximumNumberOfLines = 0
+        status.identifier = NSUserInterfaceItemIdentifier("burrowStatus")
+        card.addSubview(status)
+    }
+
+    func buildBurrowContents() {
+        // Refresh the status line each time the Burrow is shown
+        guard let card = view.subviews.flatMap({ $0.subviews }).first(where: { $0.identifier?.rawValue == "burrowCard" }) else { return }
+        let status = card.subviews.first(where: { $0.identifier?.rawValue == "burrowStatus" }) as? NSTextField
+        let enabled = SporeManager.shared.spores.filter(\.enabled).count
+        let total = SporeManager.shared.spores.count
+        let timerCount = timerManager?.timers.count ?? 0
+        let basketCount = Storage.shared.basketFiles().count
+        let cloud = SporeCloud.shared.isRunning ? "on" : "off"
+        let nightcap = NightcapController.shared.enabled ? "on" : "off"
+        status?.stringValue = "🍄 Toadstools active: \(enabled)/\(total)\n🧺 Basket: \(basketCount) files · ⏱ \(timerCount) timers · ☁ Cloud: \(cloud) · 🌙 Nightcap: \(nightcap)"
+    }
+
+    func buildPantry(in parent: NSView) {
+        searchField.frame = NSRect(x: 14, y: 396, width: 368, height: 28)
+        searchField.placeholderString = "Search the pantry…"
         searchField.bezelStyle = .roundedBezel
-        v.addSubview(searchField)
+        searchField.font = FungiTheme.body
+        searchField.delegate = self
+        parent.addSubview(searchField)
+        let clipCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
+        clipCol.width = 370
+        clipTable.addTableColumn(clipCol)
+        clipTable.headerView = nil
+        clipTable.dataSource = self
+        clipTable.delegate = self
+        clipTable.backgroundColor = .clear
+        clipTable.frame = NSRect(x: 14, y: 16, width: 370, height: 372)
+        parent.addSubview(clipTable)
+    }
 
-        // Tables
-        configureTable(clipTable)
-        configureTable(fileTable)
-        configureTable(timerList)
-        clipTable.frame = NSRect(x: 0, y: 120, width: 480, height: 360)
-        fileTable.frame = NSRect(x: 0, y: 120, width: 480, height: 320)
-        timerList.frame = NSRect(x: 0, y: 120, width: 480, height: 320)
-        v.addSubview(clipTable)
-        v.addSubview(fileTable)
-        v.addSubview(timerList)
-
-        // Drop zone (Files tab)
-        basketView = BasketView(frame: NSRect(x: 12, y: 448, width: 456, height: 62))
-        basketView.label = "Toss files into your basket (iCloud sync)"
+    func buildBasket(in parent: NSView) {
+        basketView = BasketView(frame: NSRect(x: 14, y: 376, width: 368, height: 50))
+        basketView.label = "Drop files → basket (iCloud)"
         basketView.onDrop = { [weak self] url in
             _ = Storage.shared.addToBasket(from: url)
             self?.fileTable.reloadData()
-            self?.statusLabel.stringValue = "Imported \(url.lastPathComponent) → iCloud Basket"
+            self?.footerLabel.stringValue = "Tossed into the basket: \(url.lastPathComponent)"
         }
-        basketView.isHidden = true
-        v.addSubview(basketView)
+        parent.addSubview(basketView)
 
-        // Share button (Files tab) — share selected file via AirDrop/Messages/Mail
-        shareButton = NSButton(title: "↗️ Share…", target: self, action: #selector(shareFile))
-        shareButton.bezelStyle = .rounded
-        shareButton.font = NSFont.systemFont(ofSize: 12)
-        shareButton.frame = NSRect(x: 12, y: 416, width: 100, height: 26)
-        shareButton.isHidden = true
-        v.addSubview(shareButton)
+        shareButton = ShroomButton(title: "Share", icon: "↗", color: FungiTheme.spore)
+        shareButton.target = self; shareButton.action = #selector(shareFile)
+        shareButton.frame = NSRect(x: 14, y: 336, width: 100, height: 32)
+        parent.addSubview(shareButton)
 
-        // Cloud share-link button (next to Share…)
-        let cloudLinkBtn = NSButton(title: "🔗 Copy LAN link", target: self, action: #selector(copyShareLink))
-        cloudLinkBtn.bezelStyle = .rounded
-        cloudLinkBtn.font = NSFont.systemFont(ofSize: 12)
-        cloudLinkBtn.frame = NSRect(x: 120, y: 416, width: 160, height: 26)
-        cloudLinkBtn.isHidden = true
-        v.addSubview(cloudLinkBtn)
-        self.cloudLinkBtn = cloudLinkBtn
+        cloudLinkBtn = ShroomButton(title: "Copy link", icon: "🔗", color: FungiTheme.moss)
+        cloudLinkBtn.target = self; cloudLinkBtn.action = #selector(copyShareLink)
+        cloudLinkBtn.frame = NSRect(x: 122, y: 336, width: 130, height: 32)
+        parent.addSubview(cloudLinkBtn)
 
-        // Cloud status row (Settings tab)
-        cloudStatusLabel = NSTextField(labelWithString: "Spore Cloud: starting…")
-        cloudStatusLabel.font = NSFont.systemFont(ofSize: 11)
-        cloudStatusLabel.textColor = NSColor(white: 0.7, alpha: 1)
-        cloudStatusLabel.frame = NSRect(x: 12, y: 380, width: 456, height: 16)
-        cloudStatusLabel.isHidden = true
-        v.addSubview(cloudStatusLabel)
+        let fileCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("f"))
+        fileCol.width = 370
+        fileTable.addTableColumn(fileCol)
+        fileTable.headerView = nil
+        fileTable.dataSource = self
+        fileTable.delegate = self
+        fileTable.backgroundColor = .clear
+        fileTable.frame = NSRect(x: 14, y: 16, width: 370, height: 312)
+        parent.addSubview(fileTable)
+    }
 
-        cloudToggleButton = NSButton(checkboxWithTitle: "Enable Spore Cloud (LAN share links)", target: self, action: #selector(toggleCloud))
-        cloudToggleButton.frame = NSRect(x: 12, y: 360, width: 320, height: 20)
-        cloudToggleButton.isHidden = true
-        v.addSubview(cloudToggleButton)
+    func buildTimers(in parent: NSView) {
+        let timerCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("t"))
+        timerCol.width = 370
+        timerList.addTableColumn(timerCol)
+        timerList.headerView = nil
+        timerList.dataSource = self
+        timerList.delegate = self
+        timerList.backgroundColor = .clear
+        timerList.frame = NSRect(x: 14, y: 96, width: 370, height: 296)
+        parent.addSubview(timerList)
 
-        // Nightcap widget toggle (Settings tab)
-        nightcapToggle = NSButton(checkboxWithTitle: "Show nightcap widgets when idle", target: self, action: #selector(toggleNightcap))
-        nightcapToggle.frame = NSRect(x: 12, y: 330, width: 320, height: 20)
-        nightcapToggle.isHidden = true
-        v.addSubview(nightcapToggle)
-
-        nightcapHint = NSTextField(labelWithString: "Idle threshold: 5 min (set via UserDefaults nightcap.idleMinutes)")
-        nightcapHint.font = NSFont.systemFont(ofSize: 10)
-        nightcapHint.textColor = NSColor(white: 0.6, alpha: 1)
-        nightcapHint.frame = NSRect(x: 12, y: 312, width: 456, height: 14)
-        nightcapHint.isHidden = true
-        v.addSubview(nightcapHint)
-
-        // Spores table
-        sporeTable = NSTableView()
-        let dcol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("d"))
-        dcol.width = 460
-        sporeTable.addTableColumn(dcol)
-        sporeTable.headerView = nil
-        sporeTable.dataSource = self
-        sporeTable.delegate = self
-        sporeTable.backgroundColor = .clear
-        sporeTable.frame = NSRect(x: 0, y: 160, width: 480, height: 300)
-        sporeTable.isHidden = true
-        v.addSubview(sporeTable)
-
-        // Spore detail (toggle + refresh buttons) — simple: use a table with checkbox cells instead
-        let sporeHint = NSTextField(labelWithString: "Toggle a spore to enable it. Spores run in the background and notify you.")
-        sporeHint.textColor = NSColor(white: 0.6, alpha: 1)
-        sporeHint.font = NSFont.systemFont(ofSize: 11)
-        sporeHint.frame = NSRect(x: 12, y: 470, width: 456, height: 18)
-        sporeHint.isHidden = true
-        v.addSubview(sporeHint)
-        self.sporeHint = sporeHint
-
-        // Media buttons row
-        let mediaRowLocal = NSStackView()
-        mediaRowLocal.orientation = .horizontal
-        mediaRowLocal.distribution = .fillEqually
-        mediaRowLocal.spacing = 8
-        mediaRowLocal.frame = NSRect(x: 12, y: 80, width: 456, height: 40)
-        let mediaCmds: [(String, MediaCommand)] = [("⏮", .previous), ("⏯", .toggle), ("⏭", .next)]
-        for (i, (label, _)) in mediaCmds.enumerated() {
-            let b = NSButton(title: label, target: self, action: #selector(mediaButton(_:)))
-            b.tag = i
-            b.bezelStyle = .rounded
-            b.font = NSFont.systemFont(ofSize: 18)
-            mediaRowLocal.addArrangedSubview(b)
-        }
-        mediaRowLocal.isHidden = true
-        v.addSubview(mediaRowLocal)
-        self.mediaRow = mediaRowLocal
-
-        // Timer add row
         let timerAddLocal = NSStackView()
         timerAddLocal.orientation = .horizontal
         timerAddLocal.spacing = 6
-        timerAddLocal.frame = NSRect(x: 12, y: 36, width: 456, height: 40)
+        timerAddLocal.frame = NSRect(x: 14, y: 40, width: 368, height: 40)
         timerLabelField = NSTextField(string: "")
         timerLabelField.placeholderString = "Label"
         timerLabelField.bezelStyle = .roundedBezel
@@ -1219,168 +1403,168 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         timerMinutesField = NSTextField(string: "25")
         timerMinutesField.bezelStyle = .roundedBezel
         timerMinutesField.frame = NSRect(x: 170, y: 8, width: 60, height: 24)
-        let addBtn = NSButton(title: "Add Timer", target: self, action: #selector(addTimer))
-        addBtn.bezelStyle = .rounded
-        addBtn.frame = NSRect(x: 240, y: 8, width: 110, height: 24)
+        let addBtn = ShroomButton(title: "Add Timer", icon: "⏱", color: FungiTheme.cap)
+        addBtn.target = self; addBtn.action = #selector(addTimer)
+        addBtn.frame = NSRect(x: 240, y: 8, width: 120, height: 26)
         timerAddLocal.addArrangedSubview(timerLabelField)
         timerAddLocal.addArrangedSubview(timerMinutesField)
         timerAddLocal.addArrangedSubview(addBtn)
-        timerAddLocal.isHidden = true
-        v.addSubview(timerAddLocal)
-        self.timerAdd = timerAddLocal
+        parent.addSubview(timerAddLocal)
+        timerAdd = timerAddLocal
+    }
 
-        // Settings rows
+    func buildMedia(in parent: NSView) {
+        let mediaRowLocal = NSStackView()
+        mediaRowLocal.orientation = .horizontal
+        mediaRowLocal.distribution = .fillEqually
+        mediaRowLocal.spacing = 12
+        mediaRowLocal.frame = NSRect(x: 24, y: 180, width: 348, height: 60)
+        let mediaCmds: [(String, MediaCommand)] = [("⏮", .previous), ("⏯", .toggle), ("⏭", .next)]
+        for (i, (label, _)) in mediaCmds.enumerated() {
+            let b = NSButton(title: label, target: self, action: #selector(mediaButton(_:)))
+            b.tag = i
+            b.bezelStyle = .inline
+            b.isBordered = false
+            b.font = NSFont.systemFont(ofSize: 28, weight: .light)
+            b.contentTintColor = FungiTheme.gill
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 30
+            b.layer?.backgroundColor = FungiTheme.mycelium.cgColor
+            mediaRowLocal.addArrangedSubview(b)
+        }
+        parent.addSubview(mediaRowLocal)
+        mediaRow = mediaRowLocal
+
+        let mediaTitle = SectionLabel("Media controls", font: FungiTheme.title)
+        mediaTitle.frame = NSRect(x: 24, y: 280, width: 348, height: 24)
+        parent.addSubview(mediaTitle)
+        let mediaHint = SectionLabel("Tap to skip, pause, or play your tunes.", font: FungiTheme.body, color: FungiTheme.fog)
+        mediaHint.frame = NSRect(x: 24, y: 252, width: 348, height: 18)
+        parent.addSubview(mediaHint)
+    }
+
+    func buildFairyRing(in parent: NSView) {
+        sporeHint = SectionLabel("Double-click a toadstool to toggle it.", font: FungiTheme.body, color: FungiTheme.fog)
+        sporeHint.frame = NSRect(x: 14, y: 408, width: 370, height: 18)
+        parent.addSubview(sporeHint)
+
+        let sCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("s"))
+        sCol.width = 370
+        sporeTable.addTableColumn(sCol)
+        sporeTable.headerView = nil
+        sporeTable.dataSource = self
+        sporeTable.delegate = self
+        sporeTable.backgroundColor = .clear
+        sporeTable.rowHeight = 40
+        sporeTable.frame = NSRect(x: 14, y: 16, width: 370, height: 388)
+        parent.addSubview(sporeTable)
+    }
+
+    func buildSettings(in parent: NSView) {
+        cloudStatusLabel = NSTextField(labelWithString: "Spore Cloud: starting…")
+        cloudStatusLabel.font = FungiTheme.body
+        cloudStatusLabel.textColor = FungiTheme.fog
+        cloudStatusLabel.frame = NSRect(x: 14, y: 388, width: 370, height: 16)
+        parent.addSubview(cloudStatusLabel)
+
+        cloudToggleButton = NSButton(checkboxWithTitle: "Enable Spore Cloud (LAN sharing)", target: self, action: #selector(toggleCloud))
+        cloudToggleButton.font = FungiTheme.body
+        cloudToggleButton.frame = NSRect(x: 14, y: 364, width: 370, height: 20)
+        parent.addSubview(cloudToggleButton)
+
+        nightcapToggle = NSButton(checkboxWithTitle: "Show nightcap widgets when idle", target: self, action: #selector(toggleNightcap))
+        nightcapToggle.font = FungiTheme.body
+        nightcapToggle.frame = NSRect(x: 14, y: 332, width: 370, height: 20)
+        parent.addSubview(nightcapToggle)
+
+        nightcapHint = NSTextField(labelWithString: "Idle threshold default 5 min (UserDefaults: nightcap.idleMinutes)")
+        nightcapHint.font = FungiTheme.mono
+        nightcapHint.textColor = FungiTheme.whisper
+        nightcapHint.frame = NSRect(x: 14, y: 314, width: 370, height: 14)
+        parent.addSubview(nightcapHint)
+
+        pillToggle = NSButton(checkboxWithTitle: "Show floating Burrow pill at top of screen", target: self, action: #selector(togglePill))
+        pillToggle.font = FungiTheme.body
+        pillToggle.frame = NSRect(x: 14, y: 286, width: 370, height: 20)
+        parent.addSubview(pillToggle)
+
         launchAtLogin = NSButton(checkboxWithTitle: "Launch Fungi at login", target: self, action: #selector(toggleLaunchAtLogin))
-        launchAtLogin.frame = NSRect(x: 16, y: 130, width: 300, height: 22)
-        launchAtLogin.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
-        launchAtLogin.isHidden = true
-        v.addSubview(launchAtLogin)
+        launchAtLogin.font = FungiTheme.body
+        launchAtLogin.frame = NSRect(x: 14, y: 258, width: 370, height: 20)
+        parent.addSubview(launchAtLogin)
 
-        pillToggle = NSButton(checkboxWithTitle: "Show floating pill (Dynamic Island style)", target: self, action: #selector(togglePillBtn))
-        pillToggle.frame = NSRect(x: 16, y: 102, width: 300, height: 22)
-        pillToggle.state = UserDefaults.standard.bool(forKey: "showPill") ? .on : .off
-        pillToggle.isHidden = true
-        v.addSubview(pillToggle)
-
-        // Footer status
-        statusLabel = NSTextField(labelWithString: "Ready")
-        statusLabel.textColor = NSColor(white: 0.6, alpha: 1)
-        statusLabel.font = NSFont.systemFont(ofSize: 10)
-        statusLabel.frame = NSRect(x: 12, y: 0, width: 456, height: 14)
-        v.addSubview(statusLabel)
-
-        self.view = v
+        let footer = SectionLabel("Fungi · MIT · made for your notch", font: FungiTheme.body, color: FungiTheme.whisper)
+        footer.frame = NSRect(x: 14, y: 16, width: 370, height: 18)
+        parent.addSubview(footer)
     }
 
-    func refreshPillState(_ shown: Bool) {
-        pillToggle.state = shown ? .on : .off
-    }
-
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        clipTable.reloadData()
-        fileTable.reloadData()
-        timerList.reloadData()
-    }
-
-    private func configureTable(_ t: NSTableView) {
-        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
-        col.width = 460
-        t.addTableColumn(col)
-        t.headerView = nil
-        t.dataSource = self
-        t.delegate = self
-        t.backgroundColor = .clear
-        t.target = self
-        t.doubleAction = #selector(doubleClickRow)
-        t.rowHeight = 28
-    }
-
-    @objc func switchTab(_ sender: NSButton) {
-        currentTab = sender.tag
-        for (i, b) in tabButtons.enumerated() {
-            b.contentTintColor = (i == currentTab) ? .white : NSColor(white: 0.6, alpha: 1)
-            b.layer?.backgroundColor = (i == currentTab ? NSColor(calibratedRed: 0.2, green: 0.5, blue: 0.9, alpha: 1) : .clear).cgColor
-        }
-        clipTable.isHidden = currentTab != 0
-        fileTable.isHidden = currentTab != 1
-        timerList.isHidden = currentTab != 2
-        searchField.isHidden = currentTab != 0
-        basketView?.isHidden = currentTab != 1
-        shareButton?.isHidden = currentTab != 1
-        cloudLinkBtn?.isHidden = currentTab != 1
-        mediaRow?.isHidden = currentTab != 3
-        timerAdd?.isHidden = currentTab != 2
-        sporeTable.isHidden = currentTab != 4
-        sporeHint.isHidden = currentTab != 4
-        launchAtLogin.isHidden = currentTab != 5
-        pillToggle.isHidden = currentTab != 5
-        cloudStatusLabel.isHidden = currentTab != 5
-        cloudToggleButton.isHidden = currentTab != 5
-        nightcapToggle.isHidden = currentTab != 5
-        nightcapHint.isHidden = currentTab != 5
-        if currentTab == 5 {
-            refreshPillState(UserDefaults.standard.bool(forKey: "showPill"))
-            refreshCloudState()
-            cloudToggleButton.state = (SporeCloud.shared.isRunning ? .on : .off)
-            nightcapToggle.state = (NightcapController.shared.enabled ? .on : .off)
-        }
-        if currentTab == 1 { fileTable.reloadData() }
-        if currentTab == 2 { timerList.reloadData() }
-        if currentTab == 4 { sporeTable.reloadData() }
-        if currentTab == 5 { refreshPillState(UserDefaults.standard.bool(forKey: "showPill")) }
-    }
+    // MARK: - Actions
 
     @objc func mediaButton(_ sender: NSButton) {
         let cmds: [MediaCommand] = [.previous, .toggle, .next]
         MediaController.send(cmds[sender.tag])
-        statusLabel.stringValue = "Media: \(cmds[sender.tag].rawValue)"
     }
 
     @objc func addTimer() {
-        guard let tm = timerManager else { return }
-        tm.label = timerLabelField.stringValue
-        if let m = Int(timerMinutesField.stringValue) { tm.minutes = m }
-        tm.add()
+        let mins = Int(timerMinutesField.stringValue) ?? 25
+        let label = timerLabelField.stringValue.isEmpty ? "Timer" : timerLabelField.stringValue
+        timerManager?.minutes = mins
+        timerManager?.label = label
+        timerManager?.add()
         timerList.reloadData()
-        statusLabel.stringValue = "Timer added: \(tm.minutes)m"
-    }
-
-    @objc func toggleLaunchAtLogin() {
-        let svc = SMAppService.mainApp
-        do {
-            if launchAtLogin.state == .on {
-                try svc.register()
-            } else {
-                try svc.unregister()
-            }
-        } catch {
-            statusLabel.stringValue = "Login item error: \(error.localizedDescription)"
-        }
-    }
-
-    @objc func togglePillBtn() {
-        onPillToggle?()
+        footerLabel.stringValue = "Spored a \(mins)-minute timer: \(label)"
     }
 
     @objc func doubleClickRow() {
-        let row = (currentTab == 0 ? clipTable.clickedRow : currentTab == 1 ? fileTable.clickedRow : timerList.clickedRow)
-        if currentTab == 0, row >= 0, let item = clipboard?.filtered[safe: row] {
-            clipboard?.copy(item)
-            statusLabel.stringValue = "Copied to clipboard"
-        } else if currentTab == 1, row >= 0 {
-            let files = Storage.shared.basketFiles()
-            if row < files.count {
-                NSWorkspace.shared.activateFileViewerSelecting([files[row]])
-                statusLabel.stringValue = "Revealed in Finder"
+        let row: Int
+        switch currentTab {
+        case .pantry: row = clipTable.clickedRow
+        case .basket: row = fileTable.clickedRow
+        case .timers: row = timerList.clickedRow
+        case .fairyring: row = sporeTable.clickedRow
+        default: return
+        }
+        switch currentTab {
+        case .pantry:
+            if row >= 0, let item = clipboard?.filtered[safe: row] {
+                clipboard?.copy(item); footerLabel.stringValue = "Copied: \(item.preview.prefix(40))"
             }
-        } else if currentTab == 2, row >= 0, let timer = timerManager?.timers[safe: row] {
-            timerManager?.cancel(timer.id)
-            timerList.reloadData()
-            statusLabel.stringValue = "Timer cancelled"
-        } else if currentTab == 4, row >= 0 {
-            let spores = SporeManager.shared.spores
-            if row < spores.count {
-                SporeManager.shared.toggle(spores[row])
-                sporeTable.reloadData()
-                statusLabel.stringValue = "Toggled \(spores[row].name)"
+        case .basket:
+            if row >= 0 {
+                let files = Storage.shared.basketFiles()
+                if row < files.count {
+                    NSWorkspace.shared.activateFileViewerSelecting([files[row]])
+                    footerLabel.stringValue = "Revealed \(files[row].lastPathComponent)"
+                }
             }
+        case .timers:
+            if row >= 0, let t = timerManager?.timers[safe: row] {
+                timerManager?.cancel(t.id); timerList.reloadData()
+                footerLabel.stringValue = "Timer cancelled"
+            }
+        case .fairyring:
+            if row >= 0 {
+                let spores = SporeManager.shared.spores
+                if row < spores.count {
+                    let s = spores[row]
+                    SporeManager.shared.toggle(s)
+                    sporeTable.reloadData()
+                    footerLabel.stringValue = "\(s.enabled ? "Bloomed" : "Slept"): \(s.name)"
+                }
+            }
+        default: break
         }
     }
 
     @objc func shareFile() {
-        let files = Storage.shared.basketFiles()
-        guard !files.isEmpty else { statusLabel.stringValue = "No files to share"; return }
         let pick = NSOpenPanel()
         pick.canChooseFiles = true
         pick.allowsMultipleSelection = false
         pick.directoryURL = Storage.shared.basketDir
-        pick.message = "Select a file to share via AirDrop / Messages / Mail"
-        if pick.runModal() == .OK, let url = pick.url {
-            let picker = NSSharingServicePicker(items: [url])
-            let anchor = view.window?.contentView ?? view
-            picker.show(relativeTo: NSZeroRect, of: anchor, preferredEdge: .minY)
-        }
+        pick.message = "Pick a file to share via AirDrop / Messages / Mail"
+        guard pick.runModal() == .OK, let url = pick.url else { return }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.show(relativeTo: NSZeroRect, of: view, preferredEdge: .minY)
     }
 
     @objc func copyShareLink() {
@@ -1388,16 +1572,15 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         pick.canChooseFiles = true
         pick.allowsMultipleSelection = false
         pick.directoryURL = Storage.shared.basketDir
-        pick.message = "Select a file to generate a LAN share link"
+        pick.message = "Pick a file to generate a LAN share link"
         guard pick.runModal() == .OK, let url = pick.url else { return }
         guard let link = SporeCloud.shared.link(for: url.lastPathComponent) else {
-            statusLabel.stringValue = "Cloud not running — enable in Settings"
+            footerLabel.stringValue = "Spore Cloud not running — enable in Settings"
             return
         }
-        let pb = NSPasteboard.general
-        pb.clearContents()
+        let pb = NSPasteboard.general; pb.clearContents()
         pb.setString(link, forType: .string)
-        statusLabel.stringValue = "Copied: \(link)"
+        footerLabel.stringValue = "Copied: \(link)"
     }
 
     @objc func toggleCloud() {
@@ -1419,65 +1602,90 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
+    @objc func togglePill() {
+        NotificationCenter.default.post(name: NSNotification.Name("FungiTogglePill"), object: nil)
+        pillToggle.state = (UserDefaults.standard.bool(forKey: "showPill")) ? .on : .off
+    }
+
+    @objc func toggleLaunchAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            footerLabel.stringValue = "Launch-at-login failed: \(error.localizedDescription)"
+        }
+        launchAtLogin.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+    }
+
     func refreshCloudState() {
         if SporeCloud.shared.isRunning {
-            cloudStatusLabel.stringValue = "Spore Cloud: ✓ running — share files via the link button in Files tab"
-            cloudStatusLabel.textColor = NSColor(calibratedRed: 0.4, green: 0.9, blue: 0.4, alpha: 1)
+            cloudStatusLabel.stringValue = "Spore Cloud: running — share via Copy link in Basket"
+            cloudStatusLabel.textColor = FungiTheme.moss
         } else {
-            cloudStatusLabel.stringValue = "Spore Cloud: ⏸ off — toggle below to start LAN file sharing"
-            cloudStatusLabel.textColor = NSColor(calibratedRed: 0.9, green: 0.5, blue: 0.3, alpha: 1)
+            cloudStatusLabel.stringValue = "Spore Cloud: paused — toggle below to start LAN sharing"
+            cloudStatusLabel.textColor = FungiTheme.cap
         }
     }
 
-    /// Calls refreshCloudState only if view is loaded. Used from async callbacks.
-    func refreshCloudStateSafe() {
-        if isViewLoaded { refreshCloudState() }
-    }
+    func refreshCloudStateSafe() { if isViewLoaded { refreshCloudState() } }
 
-    func updateClipCount(_ n: Int) {
-        NightcapController.shared.clipCount = n
-    }
+    // MARK: - NSTableView
 
-    // NSTableView
     func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView == clipTable { return clipboard?.filtered.count ?? 0 }
-        if tableView == fileTable { return Storage.shared.basketFiles().count }
-        if tableView == timerList { return timerManager?.timers.count ?? 0 }
-        if tableView == sporeTable { return SporeManager.shared.spores.count }
-        return 0
+        switch tableView {
+        case clipTable: return clipboard?.filtered.count ?? 0
+        case fileTable: return Storage.shared.basketFiles().count
+        case timerList: return timerManager?.timers.count ?? 0
+        case sporeTable: return SporeManager.shared.spores.count
+        default: return 0
+        }
     }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = NSTableCellView()
+        cell.wantsLayer = true
+        cell.layer?.cornerRadius = 10
+        cell.layer?.backgroundColor = FungiTheme.mycelium.withAlphaComponent(0.6).cgColor
         let tf = NSTextField(labelWithString: "")
-        tf.textColor = .white
-        tf.font = NSFont.systemFont(ofSize: 12)
+        tf.textColor = FungiTheme.ink
+        tf.font = FungiTheme.body
         tf.lineBreakMode = .byTruncatingTail
-        if tableView == clipTable, let item = clipboard?.filtered[safe: row] {
-            tf.stringValue = item.preview
-        } else if tableView == fileTable {
+        tf.drawsBackground = false
+        switch tableView {
+        case clipTable:
+            if let item = clipboard?.filtered[safe: row] {
+                tf.stringValue = "\(item.preview)"
+                tf.font = FungiTheme.mono
+            }
+        case fileTable:
             let files = Storage.shared.basketFiles()
             if row < files.count {
                 let url = files[row]
-                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey])
                 let size = attrs?.fileSize ?? 0
-                let formatter = ByteCountFormatter()
-                formatter.countStyle = .file
-                tf.stringValue = "📄 \(url.lastPathComponent)  (\(formatter.string(fromByteCount: Int64(size))))"
+                let f = ByteCountFormatter(); f.countStyle = .file
+                tf.stringValue = "🧺  \(url.lastPathComponent)  ·  \(f.string(fromByteCount: Int64(size)))"
             }
-        } else if tableView == timerList, let t = timerManager?.timers[safe: row] {
-            let remaining = max(0, t.fireDate.timeIntervalSinceNow)
-            let m = Int(remaining) / 60
-            let s = Int(remaining) % 60
-            tf.stringValue = "\(t.label)  \(m):\(String(format: "%02d", s))"
-        } else if tableView == sporeTable {
+        case timerList:
+            if let t = timerManager?.timers[safe: row] {
+                let remaining = max(0, t.fireDate.timeIntervalSinceNow)
+                let m = Int(remaining) / 60, s = Int(remaining) % 60
+                tf.stringValue = "⏱  \(t.label)   \(m):\(String(format: "%02d", s))"
+                tf.font = FungiTheme.mono
+            }
+        case sporeTable:
             let spores = SporeManager.shared.spores
             if row < spores.count {
-                let d = spores[row]
-                let mark = d.enabled ? "●" : "○"
-                tf.stringValue = "\(mark) \(d.icon)  \(d.name)  —  \(d.statusText)"
+                let s = spores[row]
+                let mark = s.enabled ? "●" : "○"
+                tf.stringValue = "\(mark)  \(s.icon)  \(s.name)  —  \(s.statusText)"
             }
+        default: break
         }
-        tf.frame = NSRect(x: 8, y: 4, width: 460, height: 20)
+        tf.frame = NSRect(x: 12, y: 8, width: 360, height: 20)
         cell.addSubview(tf)
         return cell
     }
