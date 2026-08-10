@@ -495,7 +495,8 @@ final class BatterySpore: Spore {
 
     private func check() {
         let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-        guard let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as? [CFTypeRef], !sources.isEmpty else {
+        let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as [CFTypeRef]
+        guard !sources.isEmpty else {
             statusText = "No battery (desktop?)"; return
         }
         for src in sources {
@@ -605,7 +606,7 @@ final class CalendarSpore: Spore {
         let events = store.events(matching: pred).filter { $0.startDate > start }.sorted { $0.startDate < $1.startDate }
         if let next = events.first {
             let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
-            statusText = "\(next.title) @ \(f.string(from: next.startDate))"
+            statusText = "\(next.title ?? "Untitled") @ \(f.string(from: next.startDate))"
         } else {
             statusText = "No upcoming events"
         }
