@@ -769,7 +769,8 @@ final class SporeCloud {
 
     func start(statusChanged: @escaping () -> Void) {
         self.statusChanged = statusChanged
-        guard let basket = Storage.shared.basketDir else {
+        // Nothing to serve without a Basket; serveBasketFile resolves it per request.
+        guard Storage.shared.basketDir != nil else {
             isRunning = false
             statusChanged()
             return
@@ -1085,7 +1086,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosure(_ sender: NSApplication) -> Bool { false }
+    // Note the spelling: ...Closed, not ...Closure. Misspelled, this silently
+    // matches nothing on NSApplicationDelegate and never runs, leaving the
+    // menu bar app free to quit when its last window goes away.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 // MARK: - Popover View
