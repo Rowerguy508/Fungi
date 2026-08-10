@@ -1,16 +1,41 @@
 # Shelf
 
-An open-source macOS menu bar app inspired by [Droppy](https://getdroppy.app/). A productivity shelf in your menu bar with clipboard history, drag-drop file tray, timers, media controls, and a floating Dynamic Island-style pill.
+An open-source macOS menu bar app inspired by [Droppy](https://getdroppy.app/). A productivity shelf in your menu bar with clipboard history, drag-drop file tray, timers, media controls, floating Dynamic Island pill, and an extensible Droplets system.
 
 ## Features
 
-- **Clipboard manager** — history of text, images, and files you copied. Search, click to copy back. Persists across sessions.
-- **Drag-drop file tray** — drop any file into the Files tab. It gets copied to your iCloud Drive and you can reveal it in Finder. Files sync across all your Macs.
-- **Floating pill (Dynamic Island style)** — a small always-on-top panel showing the time, clipboard count, and play/pause. Toggle from Settings.
-- **Timers** — quick countdown timers with notifications.
+### Core
+- **Clipboard manager** — text, images, files. Search, click to copy back. Persists across sessions.
+- **Drag-drop file tray** — drop any file, it copies to iCloud Drive. Reveal in Finder or share via AirDrop / Messages / Mail.
+- **Timers** — countdown timers with notifications.
 - **Media controls** — play/pause/skip from the menu bar.
-- **Launch at login** — toggleable from Settings.
-- **iCloud sync** — clipboard history, timers, and dropped files all live in `~/Library/Mobile Documents/com~apple~CloudDocs/Shelf/`. Syncs to your other Macs.
+- **Launch at login** — toggleable.
+- **iCloud sync** — clips, timers, dropped files all sync to iCloud Drive.
+
+### Droplets (extension system)
+Three shipped droplets, more easy to add:
+- **🍅 Pomodoro** — 25 min focus / 5 min break with notifications
+- **🔋 Battery monitor** — checks every 30s, alerts at 20%
+- **🌤 Weather** — fetches from wttr.in (no API key needed)
+
+Toggle droplets by double-clicking. State persists across launches.
+
+### Floating pill
+Dynamic Island-style panel at top of screen: time, clipboard count, play/pause, open-shelf button. Floats over fullscreen apps.
+
+## Build
+
+Requires Xcode 15+ and macOS 13+.
+
+```bash
+swift run
+```
+
+Release build:
+```bash
+swift build -c release
+cp .build/release/Shelf /usr/local/bin/shelf
+```
 
 ## Storage layout
 
@@ -22,56 +47,37 @@ An open-source macOS menu bar app inspired by [Droppy](https://getdroppy.app/). 
 └── Drops/            # files dropped into the tray
 ```
 
-If iCloud Drive isn't available, falls back to `~/Library/Application Support/Shelf/`.
-
-## Build
-
-Requires Xcode 15+ and macOS 13+.
-
-```bash
-swift run
-```
-
-Or build a release binary:
-
-```bash
-swift build -c release
-cp .build/release/Shelf /usr/local/bin/shelf
-shelf
-```
-
-## Permissions
-
-- **Accessibility** — for media control shortcuts (AppleScript)
-- **Notifications** — for timer alerts
+Falls back to `~/Library/Application Support/Shelf/` if iCloud unavailable.
 
 ## Architecture
 
-- `Storage` — iCloud-first, local fallback. Detects `~/Library/Mobile Documents/com~apple~CloudDocs/` and uses it as the primary write target so iCloud syncs everything.
-- `ClipboardManager` — polls `NSPasteboard.general` every 0.7s, persists as JSON in iCloud.
-- `TimerManager` — `Timer.scheduledTimer` ticker, notifications via `UNUserNotificationCenter`.
-- `MediaController` — AppleScript `System Events` keystrokes for media keys (avoids private MediaRemote framework).
-- `DropView` — drag destination with visual feedback on enter/exit, copies files to iCloud.
-- `PillController` — `NSPanel` with `.statusBar` window level, floats over fullscreen apps via `fullScreenAuxiliary` collectionBehavior.
-- `PopoverViewController` — tab-based UI: Clipboard / Files / Timers / Media / Settings.
-- `AppDelegate` — NSStatusItem with `NSPopover`, accessory activation policy (no dock icon).
+- `Storage` — iCloud-first JSON storage, automatic dir creation.
+- `ClipboardManager` — polls `NSPasteboard.general` every 0.7s.
+- `TimerManager` — `Timer.scheduledTimer` ticker, `UNUserNotificationCenter` for alerts.
+- `MediaController` — AppleScript keystrokes for media keys.
+- `DropletManager` + `Droplet` protocol — extensible droplet system.
+- `DropView` — drag destination with visual feedback, copies to iCloud.
+- `PillController` — `NSPanel` at `.statusBar` level, `fullScreenAuxiliary` collectionBehavior.
+- `PopoverViewController` — 6 tabs: Clipboard / Files / Timers / Media / Droplets / Settings.
+- `AppDelegate` — `NSStatusItem` with `NSPopover`, accessory activation policy (no dock).
 
-## What it does vs Droppy
+## Adding your own Droplet
 
-| Feature | Shelf | Droppy |
-|---|---|---|
-| Menu bar popover | ✓ | ✓ |
-| Clipboard history | ✓ | ✓ |
-| Drag-drop file tray | ✓ | ✓ |
-| Timers | ✓ | ✓ |
-| Media controls | ✓ | ✓ |
-| Dynamic Island pill | ✓ | ✓ |
-| Lock screen widgets | ✗ | ✓ |
-| Droppy Cloud (share links) | ✗ | ✓ |
-| Per-Droplet extensions | ✗ | ✓ |
-| iCloud sync | ✓ | partial |
-| Open source | ✓ (MIT) | ✗ (paid) |
+```swift
+final class MyDroplet: Droplet {
+    let id = "my-droplet"
+    let name = "My Droplet"
+    let icon = "✨"
+    var enabled: Bool = UserDefaults.standard.bool(forKey: "droplet.my")
+    private(set) var statusText = "Idle"
+
+    func start() { /* start timers, work, etc. */ }
+    func stop() { /* cleanup */ }
+}
+```
+
+Then add it to `DropletManager.shared.droplets`.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT.
