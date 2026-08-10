@@ -7,6 +7,7 @@ import ServiceManagement
 import AVFoundation
 import MediaPlayer
 import Security
+import IOKit.ps
 
 // MARK: - Models
 
@@ -414,6 +415,131 @@ final class PillController: NSObject {
     @objc private func openShelf() { onToggle?() }
 }
 
+// MARK: - Droplets (extension system)
+
+protocol Droplet: AnyObject {
+    var id: String { get }
+    var name: String { get }
+    var icon: String { get }
+    var enabled: Bool { get set }
+    var statusText: String { get }
+    func start()
+    func stop()
+}
+
+final class PomodoroDroplet: Droplet {
+    let id = "pomodoro"
+    let name = "Pomodoro"
+    let icon = "🍅"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.pomodoro") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.pomodoro") } }
+    private(set) var statusText = "25 min focus / 5 min break"
+    private var timer: Timer?
+    private var isFocus = true
+    private var remaining: TimeInterval = 25 * 60
+
+    func start() {
+        isFocus = true
+        remaining = 25 * 60
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        notify("Focus session started", "25 minutes. Go!")
+    }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        statusText = "Paused"
+    }
+    private func tick() {
+        remaining -= 1
+        let m = Int(remaining) / 60, s = Int(remaining) % 60
+        statusText = "\(isFocus ? "Focus" : "Break")  \(m):\(String(format: "%02d", s))"
+        if remaining <= 0 {
+            isFocus.toggle()
+            remaining = isFocus ? 25 * 60 : 5 * 60
+            notify(isFocus ? "Break over — focus!" : "Focus done — take a break", isFocus ? "25 minutes. Go!" : "5 minutes. Stretch!")
+        }
+    }
+    private func notify(_ title: String, _ body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title; content.body = body; content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+}
+
+final class BatteryDroplet: Droplet {
+    let id = "battery"
+    let name = "Battery monitor"
+    let icon = "🔋"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.battery") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.battery") } }
+    private(set) var statusText = "Monitoring battery"
+    private var timer: Timer?
+    private var lastAlerted = false
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.check() }
+        check()
+    }
+    func stop() { timer?.invalidate(); timer = nil; statusText = "Monitoring off" }
+
+    private func check() {
+        let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+        guard let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as? [CFTypeRef], !sources.isEmpty else {
+            statusText = "No battery (desktop?)"; return
+        }
+        for src in sources {
+            if let desc = IOPSGetPowerSourceDescription(info, src)?.takeUnretainedValue() as? [String: Any],
+               let current = desc[kIOPSCurrentCapacityKey] as? Int,
+               let max = desc[kIOPSMaxCapacityKey] as? Int {
+                let pct = Int(Double(current) / Double(max) * 100)
+                statusText = "\(pct)%"
+                if pct <= 20 && !lastAlerted {
+                    let c = UNMutableNotificationContent()
+                    c.title = "Battery low"; c.body = "\(pct)% remaining — plug in!"; c.sound = .default
+                    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+                    lastAlerted = true
+                } else if pct > 25 { lastAlerted = false }
+                return
+            }
+        }
+    }
+}
+
+final class WeatherDroplet: Droplet {
+    let id = "weather"
+    let name = "Weather"
+    let icon = "🌤"
+    var enabled = UserDefaults.standard.bool(forKey: "droplet.weather") { didSet { UserDefaults.standard.set(enabled, forKey: "droplet.weather") } }
+    private(set) var statusText = "Fetching weather…"
+
+    func start() { refresh() }
+    func stop() { statusText = "Weather off" }
+
+    func refresh() {
+        statusText = "Fetching…"
+        let url = URL(string: "https://wttr.in/?format=%t+%C&lang=en")!
+        let task = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            if let data, let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
+                DispatchQueue.main.async { self?.statusText = s }
+            } else {
+                DispatchQueue.main.async { self?.statusText = "Weather unavailable" }
+            }
+        }
+        task.resume()
+    }
+}
+
+final class DropletManager {
+    static let shared = DropletManager()
+    let droplets: [Droplet] = [PomodoroDroplet(), BatteryDroplet(), WeatherDroplet()]
+    var refreshUI: (() -> Void)?
+    private init() {
+        for d in droplets where d.enabled { d.start() }
+    }
+    func toggle(_ d: Droplet) {
+        d.enabled.toggle()
+        if d.enabled { d.start() } else { d.stop() }
+        refreshUI?()
+    }
+}
+
 // MARK: - App Delegate (Menu Bar)
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -440,10 +566,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popoverVC.onPillToggle = { [weak self] in self?.togglePill() }
         clipboard.start()
         timerManager.start()
+        _ = DropletManager.shared
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.timerManager.tick()
         }
         if showPill { togglePill() }
+        // Refresh droplet status every 5s so the UI shows live updates
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self = self, self.popoverVC.currentTab == 4 else { return }
+            self.popoverVC.dropletTable.reloadData()
+        }
     }
 
     func togglePill() {
@@ -476,7 +608,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     weak var clipboard: ClipboardManager?
     weak var timerManager: TimerManager?
     var onPillToggle: (() -> Void)?
-    let tabs = ["Clipboard", "Files", "Timers", "Media", "Settings"]
+    let tabs = ["Clipboard", "Files", "Timers", "Media", "Droplets", "Settings"]
     var currentTab = 0
     var tabButtons: [NSButton] = []
     let searchField = NSTextField()
@@ -492,6 +624,9 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     var dropView: DropView!
     var mediaRow: NSStackView!
     var timerAdd: NSStackView!
+    var dropletTable: NSTableView!
+    var shareButton: NSButton!
+    var dropletHint: NSTextField!
 
     override func loadView() {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 600))
@@ -564,6 +699,36 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         }
         dropView.isHidden = true
         v.addSubview(dropView)
+
+        // Share button (Files tab) — share selected file via AirDrop/Messages/Mail
+        shareButton = NSButton(title: "↗️ Share…", target: self, action: #selector(shareFile))
+        shareButton.bezelStyle = .rounded
+        shareButton.font = NSFont.systemFont(ofSize: 12)
+        shareButton.frame = NSRect(x: 12, y: 416, width: 100, height: 26)
+        shareButton.isHidden = true
+        v.addSubview(shareButton)
+
+        // Droplets table
+        dropletTable = NSTableView()
+        let dcol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("d"))
+        dcol.width = 460
+        dropletTable.addTableColumn(dcol)
+        dropletTable.headerView = nil
+        dropletTable.dataSource = self
+        dropletTable.delegate = self
+        dropletTable.backgroundColor = .clear
+        dropletTable.frame = NSRect(x: 0, y: 160, width: 480, height: 300)
+        dropletTable.isHidden = true
+        v.addSubview(dropletTable)
+
+        // Droplet detail (toggle + refresh buttons) — simple: use a table with checkbox cells instead
+        let dropletHint = NSTextField(labelWithString: "Toggle a droplet to enable it. Droplets run in the background and notify you.")
+        dropletHint.textColor = NSColor(white: 0.6, alpha: 1)
+        dropletHint.font = NSFont.systemFont(ofSize: 11)
+        dropletHint.frame = NSRect(x: 12, y: 470, width: 456, height: 18)
+        dropletHint.isHidden = true
+        v.addSubview(dropletHint)
+        self.dropletHint = dropletHint
 
         // Media buttons row
         let mediaRowLocal = NSStackView()
@@ -663,13 +828,17 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         timerList.isHidden = currentTab != 2
         searchField.isHidden = currentTab != 0
         dropView?.isHidden = currentTab != 1
+        shareButton?.isHidden = currentTab != 1
         mediaRow?.isHidden = currentTab != 3
         timerAdd?.isHidden = currentTab != 2
-        launchAtLogin.isHidden = currentTab != 4
-        pillToggle.isHidden = currentTab != 4
+        dropletTable.isHidden = currentTab != 4
+        dropletHint.isHidden = currentTab != 4
+        launchAtLogin.isHidden = currentTab != 5
+        pillToggle.isHidden = currentTab != 5
         if currentTab == 1 { fileTable.reloadData() }
         if currentTab == 2 { timerList.reloadData() }
-        if currentTab == 4 { refreshPillState(UserDefaults.standard.bool(forKey: "showPill")) }
+        if currentTab == 4 { dropletTable.reloadData() }
+        if currentTab == 5 { refreshPillState(UserDefaults.standard.bool(forKey: "showPill")) }
     }
 
     @objc func mediaButton(_ sender: NSButton) {
@@ -719,6 +888,28 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             timerManager?.cancel(timer.id)
             timerList.reloadData()
             statusLabel.stringValue = "Timer cancelled"
+        } else if currentTab == 4, row >= 0 {
+            let droplets = DropletManager.shared.droplets
+            if row < droplets.count {
+                DropletManager.shared.toggle(droplets[row])
+                dropletTable.reloadData()
+                statusLabel.stringValue = "Toggled \(droplets[row].name)"
+            }
+        }
+    }
+
+    @objc func shareFile() {
+        let files = Storage.shared.droppedFiles()
+        guard !files.isEmpty else { statusLabel.stringValue = "No files to share"; return }
+        let pick = NSOpenPanel()
+        pick.canChooseFiles = true
+        pick.allowsMultipleSelection = false
+        pick.directoryURL = Storage.shared.dropsDir
+        pick.message = "Select a file to share via AirDrop / Messages / Mail"
+        if pick.runModal() == .OK, let url = pick.url {
+            let picker = NSSharingServicePicker(items: [url])
+            let anchor = view.window?.contentView ?? view
+            picker.show(relativeTo: NSZeroRect, of: anchor, preferredEdge: .minY)
         }
     }
 
@@ -727,6 +918,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         if tableView == clipTable { return clipboard?.filtered.count ?? 0 }
         if tableView == fileTable { return Storage.shared.droppedFiles().count }
         if tableView == timerList { return timerManager?.timers.count ?? 0 }
+        if tableView == dropletTable { return DropletManager.shared.droplets.count }
         return 0
     }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -752,6 +944,13 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             let m = Int(remaining) / 60
             let s = Int(remaining) % 60
             tf.stringValue = "\(t.label)  \(m):\(String(format: "%02d", s))"
+        } else if tableView == dropletTable {
+            let droplets = DropletManager.shared.droplets
+            if row < droplets.count {
+                let d = droplets[row]
+                let mark = d.enabled ? "●" : "○"
+                tf.stringValue = "\(mark) \(d.icon)  \(d.name)  —  \(d.statusText)"
+            }
         }
         tf.frame = NSRect(x: 8, y: 4, width: 460, height: 20)
         cell.addSubview(tf)
