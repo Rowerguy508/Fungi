@@ -1156,7 +1156,10 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     let clipTable = NSTableView()
     let fileTable = NSTableView()
     let timerList = NSTableView()
-    let sporeTable = NSTableView()
+    let sporeTable = NSTableView() // legacy — Fairy Ring now uses sporeGrid
+    var sporeGrid: NSView!
+    var sporeGridCells: [SporeCell] = []
+    var sporeGridFlair: SporeCell?
 
     var basketView: BasketView!
     var mediaRow: NSStackView!
@@ -1368,7 +1371,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         case .settings: subtitleLabel.stringValue = "Tune your fungi"
         }
         for v in [searchField, clipTable, fileTable, timerList, basketView,
-                  mediaRow, timerAdd, sporeTable, sporeHint, cloudStatusLabel,
+                  mediaRow, timerAdd, sporeTable, sporeGrid, sporeHint, cloudStatusLabel,
                   cloudToggleButton, nightcapToggle, nightcapHint,
                   launchAtLogin, pillToggle, shareButton, cloudLinkBtn, basketIndexBtn] {
             v?.isHidden = true
@@ -1415,9 +1418,10 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         case .echo:
             echoPane.isHidden = false
         case .fairyring:
-            sporeTable.isHidden = false
+            sporeTable.isHidden = true // legacy table kept for state but hidden
             sporeHint.isHidden = false
-            sporeTable.reloadData()
+            sporeGrid?.isHidden = false
+            refreshFairyRing()
         case .settings:
             launchAtLogin.isHidden = false
             pillToggle.isHidden = false
@@ -1444,15 +1448,14 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: - Tab content builders
 
     func buildBurrow(in parent: NSView) {
-        // Card shown when Burrow tab is active
-        let card = NSVisualEffectView(frame: NSRect(x: 14, y: 16, width: 368, height: 408))
-        card.material = .hudWindow
-        card.blendingMode = .behindWindow
-        card.state = .active
+        // Card shown when Burrow tab is active.
+        // The content card already has a humus-tone opaque backdrop (set up
+        // in loadView), so Burrow only needs to frame its hero/tagline/blurb
+        // — no second NSVisualEffectView on top, which would re-introduce
+        // transparency against busy wallpapers.
+        let card = NSView(frame: NSRect(x: 14, y: 16, width: 368, height: 408))
         card.wantsLayer = true
         card.layer?.cornerRadius = FungiTheme.cardRadius
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.3).cgColor
         card.identifier = NSUserInterfaceItemIdentifier("burrowCard")
         parent.addSubview(card)
 
@@ -1513,7 +1516,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         clipTable.headerView = nil
         clipTable.dataSource = self
         clipTable.delegate = self
-        clipTable.backgroundColor = .clear
+        clipTable.backgroundColor = FungiTheme.humus
         clipTable.frame = NSRect(x: 14, y: 16, width: 370, height: 372)
         parent.addSubview(clipTable)
     }
@@ -1549,7 +1552,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         fileTable.headerView = nil
         fileTable.dataSource = self
         fileTable.delegate = self
-        fileTable.backgroundColor = .clear
+        fileTable.backgroundColor = FungiTheme.humus
         fileTable.frame = NSRect(x: 14, y: 16, width: 370, height: 312)
         parent.addSubview(fileTable)
     }
@@ -1561,7 +1564,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         timerList.headerView = nil
         timerList.dataSource = self
         timerList.delegate = self
-        timerList.backgroundColor = .clear
+        timerList.backgroundColor = FungiTheme.humus
         timerList.frame = NSRect(x: 14, y: 96, width: 370, height: 296)
         parent.addSubview(timerList)
 
@@ -1632,20 +1635,57 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func buildFairyRing(in parent: NSView) {
-        sporeHint = SectionLabel("Double-click a toadstool to toggle it.", font: FungiTheme.body, color: FungiTheme.fog)
-        sporeHint.frame = NSRect(x: 14, y: 408, width: 370, height: 18)
-        parent.addSubview(sporeHint)
+        // Fairy Ring shows ALL 32 toadstools in a single 4-column grid so the
+        // catalogue is fully visible the moment the tab is picked. The old
+        // single-column NSTableView only fit ~12 rows and the scroll position
+        // had to be reset every time the tab was reselected (was a bug source).
+        // The grid view replaces the table entirely.
+        sporeGrid = NSView(frame: NSRect(x: 14, y: 16, width: 370, height: 408))
+        sporeGrid.wantsLayer = true
+        sporeGrid.layer?.backgroundColor = FungiTheme.humus.cgColor
+        sporeGrid.layer?.cornerRadius = 8
+        parent.addSubview(sporeGrid)
+        sporeGridCells = []
+        sporeGridFlair = nil
 
-        let sCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("s"))
-        sCol.width = 370
-        sporeTable.addTableColumn(sCol)
-        sporeTable.headerView = nil
-        sporeTable.dataSource = self
-        sporeTable.delegate = self
-        sporeTable.backgroundColor = .clear
-        sporeTable.rowHeight = 40
-        sporeTable.frame = NSRect(x: 14, y: 16, width: 370, height: 388)
-        parent.addSubview(sporeTable)
+        let cols = 4
+        let rows = 8 // 32 / 4
+        let cellWidth: CGFloat = 370 / CGFloat(cols) // 92.5
+        let cellHeight: CGFloat = 408 / CGFloat(rows) // 51
+
+        for (index, spore) in SporeManager.shared.spores.enumerated() {
+            let col = index % cols
+            let row = index / cols
+            let cell = SporeCell(frame: NSRect(
+                x: CGFloat(col) * cellWidth + 4,
+                y: CGFloat(rows - 1 - row) * cellHeight + 4, // flip for macOS y-up
+                width: cellWidth - 8,
+                height: cellHeight - 8
+            ))
+            cell.sporeRef = WeakHolder(spore as AnyObject)
+            cell.refresh()
+            cell.onToggle = { [weak self] (holder: WeakHolder<AnyObject>) in
+                guard let self = self, let s = holder.value as? Spore else { return }
+                SporeManager.shared.toggle(s)
+                self.refreshFairyRing()
+                self.footerLabel.stringValue = s.enabled ? "✨ \(s.name) on" : "💤 \(s.name) off"
+            }
+            cell.onInfo = { [weak self] (holder: WeakHolder<AnyObject>) in
+                guard let self = self, let s = holder.value as? Spore else { return }
+                let info = SporeCell.infoText(for: s)
+                self.footerLabel.stringValue = "\(s.icon) \(s.name): \(info)"
+            }
+            sporeGrid.addSubview(cell)
+            sporeGridCells.append(cell)
+        }
+
+        sporeHint = SectionLabel("Double-click a toadstool to toggle it · ⓘ for setup", font: FungiTheme.body, color: FungiTheme.fog)
+        sporeHint.frame = NSRect(x: 14, y: 0, width: 370, height: 14)
+        parent.addSubview(sporeHint)
+    }
+
+    func refreshFairyRing() {
+        for cell in sporeGridCells { cell.refresh() }
     }
 
     func buildSettings(in parent: NSView) {
@@ -1951,6 +1991,126 @@ extension String {
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+}
+
+// MARK: - SporeCell (Fairy Ring grid)
+
+final class SporeCell: NSView {
+    var sporeRef: WeakHolder<AnyObject>?
+    var onToggle: ((WeakHolder<AnyObject>) -> Void)?
+    var onInfo: ((WeakHolder<AnyObject>) -> Void)?
+
+    private let iconLabel = NSTextField(labelWithString: "")
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let infoBtn = NSButton(title: "ⓘ", target: nil, action: nil)
+    private let ring = NSView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+
+        ring.wantsLayer = true
+        ring.layer?.borderWidth = 1
+        ring.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.4).cgColor
+        ring.layer?.cornerRadius = 7
+        addSubview(ring)
+        ring.frame = bounds
+
+        iconLabel.font = NSFont.systemFont(ofSize: 18)
+        iconLabel.alignment = .center
+        iconLabel.frame = NSRect(x: 0, y: 22, width: bounds.width, height: 22)
+        addSubview(iconLabel)
+
+        nameLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        nameLabel.alignment = .center
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.frame = NSRect(x: 2, y: 6, width: bounds.width - 4, height: 12)
+        addSubview(nameLabel)
+
+        infoBtn.font = NSFont.systemFont(ofSize: 9)
+        infoBtn.bezelStyle = .circular
+        infoBtn.isBordered = false
+        infoBtn.frame = NSRect(x: bounds.width - 16, y: 2, width: 14, height: 14)
+        addSubview(infoBtn)
+
+        let click = NSClickGestureRecognizer(target: self, action: #selector(toggle))
+        addGestureRecognizer(click)
+        infoBtn.target = self
+        infoBtn.action = #selector(showInfo)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        ring.frame = bounds
+        iconLabel.frame = NSRect(x: 0, y: bounds.height - 28, width: bounds.width, height: 20)
+        nameLabel.frame = NSRect(x: 2, y: 6, width: bounds.width - 4, height: 12)
+        infoBtn.frame = NSRect(x: bounds.width - 16, y: 2, width: 14, height: 14)
+    }
+
+    func refresh() {
+        guard let spore = sporeRef?.value as? Spore else { return }
+        iconLabel.stringValue = spore.icon
+        nameLabel.stringValue = spore.name
+        if spore.enabled {
+            layer?.backgroundColor = FungiTheme.mycelium.withAlphaComponent(0.7).cgColor
+            ring.layer?.borderColor = FungiTheme.spore.withAlphaComponent(0.9).cgColor
+            ring.layer?.borderWidth = 1.5
+            nameLabel.textColor = FungiTheme.ink
+            iconLabel.alphaValue = 1.0
+        } else {
+            layer?.backgroundColor = FungiTheme.canopy.withAlphaComponent(0.6).cgColor
+            ring.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.25).cgColor
+            ring.layer?.borderWidth = 1
+            nameLabel.textColor = FungiTheme.fog
+            iconLabel.alphaValue = 0.55
+        }
+    }
+
+    @objc func toggle() { if let r = sporeRef { onToggle?(r) } }
+    @objc func showInfo() { if let r = sporeRef { onInfo?(r) } }
+
+    /// Setup blurb per spore. Used by the ⓘ button.
+    static func infoText(for spore: Spore) -> String {
+        switch spore.id {
+        case "pomodoro":  return "25-min focus timer. Toggle on then press ⌥⌘P from anywhere to start."
+        case "truffle":   return "Smart paste: transforms clipboard content (markdown→rich text, JSON→pretty, etc.). Toggle to enable."
+        case "bamboo":    return "Snippets — type ;shortcut anywhere to expand a saved snippet. Toggle to register."
+        case "morel":     return "Quick capture — shortcut opens a small note taker, saved to iCloud Notes."
+        case "clover":    return "Window presets — ⌥⌘←/→/↑ snap to halves & corners. Requires Accessibility access."
+        case "battery":   return "Adds a battery badge next to the menu bar icon. No permission needed."
+        case "system-stats": return "CPU/RAM/disk summary in the Burrow footer. Updates every minute."
+        case "network":   return "Shows current Wi-Fi name + latency in the Burrow footer. Auto refresh."
+        case "stalk":     return "Battery alert at 20% with an opt-in chime. Customizable threshold."
+        case "lichen":    return "Clipboard size summary — current and longest this session."
+        case "moth":      return "Visual chime — a one-time shimmer on sends/receives. Press ⌥⌘M to fire."
+        case "capstone":  return "Word/char/line counts for the active text editor (TextEdit, Pages, etc.)."
+        case "pollen":    return "Pollen-style ambient sound — gentle forest hum when the Mac is idle."
+        case "weather":   return "Current temperature in the menu bar. Uses macOS WeatherKit, no API key needed."
+        case "calendar":  return "Surfaces the next calendar event in the menu bar. First run asks for Calendar access."
+        case "fern":      return "Daily focus time goal — the Burrow tells you when you've hit your daily minimum."
+        case "mycelium":  return "Cross-device clipboard: copy on the iPhone, paste on the Mac. No additional app needed."
+        case "pin":       return "Pin frequently used toadstools to the top of the Burrow status line."
+        case "bee":       return "Weekly screenshot of the Burrow — saved automatically to iCloud BurrowArchive/."
+        case "conifer":   return "Quick file opener — ⌥⌘F opens any path with FuzzyFinder-style search."
+        case "maple":     return "Pick colors anywhere on screen. Press ⌥⌘C to drop a hex into the active app."
+        case "fox":       return "Git status dot — repo + branch + dirty count. Polls every minute."
+        case "warbler":   return "Ambient bird sounds on every macOS notification. Toggle when you want a break."
+        case "quill":     return "Hashes the clipboard text (SHA-256 prefix). Useful for verifying shares."
+        case "cricket":   return "Key-press sound effects. Asks for Input Monitoring access the first time."
+        case "familiar":  return "Watches for claude/code sessions to be running and surfaces them in the Burrow."
+        case "frontmost-url": return "Shows the frontmost browser URL in the menu bar. Updates every 3 seconds."
+        case "root":      return "Counts the open Finder windows. Useful for quick declutter sanity checks."
+        case "sporework": return "Indexes open windows across apps. Tells you what you actually have running."
+        case "bloom":     return "Daily app-launch tally. The Burrow tells you what you used today at 6pm."
+        case "husk":      return "Tracks the largest thing on your clipboard today. Auto expires at midnight."
+        case "leaf":      return "UserDefaults-driven scriptable hook. Set 'spores.leaf.script' to a shell path."
+        default:           return "No setup required — just toggle it on to enable."
+        }
     }
 }
 
