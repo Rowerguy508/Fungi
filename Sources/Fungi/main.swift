@@ -46,7 +46,10 @@ final class Storage {
     static let shared = Storage()
     let supportDir: URL
     let icloudDir: URL?
-    let basketDir: URL?
+    /// Always present. iCloud when available, Application Support otherwise —
+    /// the Basket backs the Basket tab, Spore Cloud, Spore Print and Peel, and
+    /// none of them should vanish just because iCloud Drive is off.
+    let basketDir: URL
     let clipsFile: URL
     let timersFile: URL
     let imagesDir: URL
@@ -71,8 +74,8 @@ final class Storage {
             }
         }
         icloudDir = cloud
-        basketDir = cloud?.appendingPathComponent("Basket", isDirectory: true)
-        if let d = basketDir { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        basketDir = (cloud ?? supportDir).appendingPathComponent("Basket", isDirectory: true)
+        try? fm.createDirectory(at: basketDir, withIntermediateDirectories: true)
 
         imagesDir = (icloudDir ?? supportDir).appendingPathComponent("clipImages", isDirectory: true)
         try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
@@ -108,7 +111,7 @@ final class Storage {
 
     /// Files dropped into the tray (live listing of Basket dir)
     func basketFiles() -> [URL] {
-        guard let d = basketDir else { return [] }
+        let d = basketDir
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: d,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -120,7 +123,7 @@ final class Storage {
         }
     }
     func addToBasket(from src: URL) -> URL? {
-        guard let d = basketDir else { return nil }
+        let d = basketDir
         let dest = d.appendingPathComponent(src.lastPathComponent)
         var final = dest
         var i = 1
@@ -769,13 +772,6 @@ final class SporeCloud {
 
     func start(statusChanged: @escaping () -> Void) {
         self.statusChanged = statusChanged
-        // Nothing to serve without a Basket; serveBasketFile resolves it per request.
-        guard Storage.shared.basketDir != nil else {
-            isRunning = false
-            statusChanged()
-            return
-        }
-
         // Browsable index so a phone on the same WiFi can see the whole basket.
         server["/"] = { [weak self] _ in .ok(.html(self?.indexHTML() ?? "<h1>🍄 Fungi</h1>")) }
         server["/spores/:path"] = { [weak self] request in
@@ -810,7 +806,7 @@ final class SporeCloud {
     /// traversal outright; the containment check below backstops that in case
     /// the layout ever gains subdirectories.
     private func serveBasketFile(_ requested: String) -> HttpResponse {
-        guard let basket = Storage.shared.basketDir else { return .notFound }
+        let basket = Storage.shared.basketDir
 
         let name = (requested as NSString).lastPathComponent
         // Reject empty, "."/"..", and dotfiles.

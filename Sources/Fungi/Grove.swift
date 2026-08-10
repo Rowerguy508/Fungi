@@ -393,7 +393,7 @@ final class SporePrint: NSObject {
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return }
         let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let dest = (Storage.shared.basketDir ?? Storage.shared.supportDir)
+        let dest = Storage.shared.basketDir
             .appendingPathComponent("Spore Print \(df.string(from: Date())).png")
         try? png.write(to: dest)
         onSaved?(dest)
@@ -833,7 +833,7 @@ enum Peel {
                                                          from: handler,
                                                          croppedToInstancesExtent: false)
                 let out = CIImage(cvPixelBuffer: buffer)
-                let dest = (Storage.shared.basketDir ?? Storage.shared.supportDir)
+                let dest = Storage.shared.basketDir
                     .appendingPathComponent(url.deletingPathExtension().lastPathComponent + " (peeled).png")
                 let ctx = CIContext()
                 try ctx.writePNGRepresentation(of: out, to: dest, format: .RGBA8,
