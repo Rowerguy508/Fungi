@@ -12,8 +12,10 @@ let package = Package(
         .package(url: "https://github.com/httpswift/swifter.git", from: "1.5.0"),
         // Breeze audio output switching (MIT)
         .package(url: "https://github.com/rnine/SimplyCoreAudio.git", from: "4.1.1"),
-        // User-configurable global hotkeys (MIT)
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "1.10.0")
+        // User-configurable global hotkeys (MIT). Pinned to last stable v1.x
+        // because 3.x uses #Preview macros + Swift 6 toolchain that breaks
+        // SwiftPM build. See https://github.com/sindresorhus/KeyboardShortcuts
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", exact: "1.10.0")
     ],
     targets: [
         .executableTarget(
