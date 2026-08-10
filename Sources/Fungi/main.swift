@@ -10,6 +10,8 @@ import Security
 import IOKit.ps
 import EventKit
 import Network
+import Swifter
+import KeyboardShortcuts
 
 // MARK: - Models
 
@@ -44,7 +46,10 @@ final class Storage {
     static let shared = Storage()
     let supportDir: URL
     let icloudDir: URL?
-    let basketDir: URL?
+    /// Always present. iCloud when available, Application Support otherwise —
+    /// the Basket backs the Basket tab, Spore Cloud, Spore Print and Peel, and
+    /// none of them should vanish just because iCloud Drive is off.
+    let basketDir: URL
     let clipsFile: URL
     let timersFile: URL
     let imagesDir: URL
@@ -69,8 +74,8 @@ final class Storage {
             }
         }
         icloudDir = cloud
-        basketDir = cloud?.appendingPathComponent("Basket", isDirectory: true)
-        if let d = basketDir { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        basketDir = (cloud ?? supportDir).appendingPathComponent("Basket", isDirectory: true)
+        try? fm.createDirectory(at: basketDir, withIntermediateDirectories: true)
 
         imagesDir = (icloudDir ?? supportDir).appendingPathComponent("clipImages", isDirectory: true)
         try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
@@ -106,7 +111,7 @@ final class Storage {
 
     /// Files dropped into the tray (live listing of Basket dir)
     func basketFiles() -> [URL] {
-        guard let d = basketDir else { return [] }
+        let d = basketDir
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: d,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -118,7 +123,7 @@ final class Storage {
         }
     }
     func addToBasket(from src: URL) -> URL? {
-        guard let d = basketDir else { return nil }
+        let d = basketDir
         let dest = d.appendingPathComponent(src.lastPathComponent)
         var final = dest
         var i = 1
@@ -200,7 +205,16 @@ final class ClipboardManager: ObservableObject {
         } else if let paths = item.filePaths {
             pb.writeObjects(paths.map { URL(fileURLWithPath: $0) } as [NSURL])
         }
+        // clearContents() bumps changeCount, so without this the next poll
+        // re-records what we just wrote and the Pantry fills with duplicates
+        // every time a clip is recopied.
+        lastChangeCount = pb.changeCount
     }
+
+    /// The most recent clip that isn't what's already on the pasteboard.
+    /// `items.first` is the current pasteboard content, so recopying it does
+    /// nothing — this is what the "paste previous clip" hotkey wants.
+    var previousClip: ClipboardItem? { items[safe: 1] }
 
     func clear() {
         items.removeAll()
@@ -493,7 +507,8 @@ final class BatterySpore: Spore {
 
     private func check() {
         let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-        guard let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as? [CFTypeRef], !sources.isEmpty else {
+        let sources = IOPSCopyPowerSourcesList(info).takeRetainedValue() as [CFTypeRef]
+        guard !sources.isEmpty else {
             statusText = "No battery (desktop?)"; return
         }
         for src in sources {
@@ -550,6 +565,7 @@ final class SporeManager {
         MyceliumSpore(), PinSpore(), BeeSpore(), ConiferSpore(),
         // Fun
         MapleSpore(), FoxSpore(), WarblerSpore(), QuillSpore(),
+        CricketSpore(), FamiliarSpore(),
         // Shell
         FrontmostURLSpore(), RootSpore(), SporeworkSpore(), BloomSpore(), HuskSpore(),
         LeafSpore()
@@ -600,7 +616,7 @@ final class CalendarSpore: Spore {
         let events = store.events(matching: pred).filter { $0.startDate > start }.sorted { $0.startDate < $1.startDate }
         if let next = events.first {
             let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
-            statusText = "\(next.title) @ \(f.string(from: next.startDate))"
+            statusText = "\(next.title ?? "Untitled") @ \(f.string(from: next.startDate))"
         } else {
             statusText = "No upcoming events"
         }
@@ -756,18 +772,23 @@ final class NetworkSpore: Spore {
 
 final class SporeCloud {
     static let shared = SporeCloud()
+    static let port: in_port_t = 8420
+
     var isRunning = false
-    private var listener: NWListener?
+    private let server = HttpServer()
     private var statusChanged: (() -> Void)?
 
     func start(statusChanged: @escaping () -> Void) {
         self.statusChanged = statusChanged
+        // Browsable index so a phone on the same WiFi can see the whole basket.
+        server["/"] = { [weak self] _ in .ok(.html(self?.indexHTML() ?? "<h1>🍄 Fungi</h1>")) }
+        server["/spores/:path"] = { [weak self] request in
+            guard let self, let raw = request.params.first?.value else { return .notFound }
+            return self.serveBasketFile(raw)
+        }
+
         do {
-            listener = try NWListener(using: .tcp, on: 8420)
-            listener?.newConnectionHandler = { [weak self] conn in
-                self?.handle(conn)
-            }
-            listener?.start(queue: .global())
+            try server.start(Self.port, forceIPv4: true)
             isRunning = true
         } catch {
             isRunning = false
@@ -776,54 +797,89 @@ final class SporeCloud {
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        server.stop()
         isRunning = false
         statusChanged?()
     }
 
-    /// Serve one HTTP GET and close. Files served from Basket dir.
-    private func handle(_ conn: NWConnection) {
-        conn.start(queue: .global())
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
-            guard let self, let data, let raw = String(data: data, encoding: .utf8) else { conn.cancel(); return }
-            let line = raw.components(separatedBy: "\r\n").first ?? ""
-            let parts = line.split(separator: " ")
-            guard parts.count >= 2, parts[0] == "GET", let drops = Storage.shared.basketDir else {
-                self.http(conn, code: 400, body: "bad request")
-                return
-            }
-            // URL-decoded path: /<filename>
-            var path = String(parts[1])
-            if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
-            path = path.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? path
-            let name = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let file = drops.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: file.path) else {
-                self.http(conn, code: 404, body: "not found")
-                return
-            }
-            guard let body = try? Data(contentsOf: file) else {
-                self.http(conn, code: 500, body: "read error")
-                return
-            }
-            var head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"\(name)\"\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
-            var response = Data(head.utf8)
-            response.append(body)
-            conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+    /// Serve one file out of the Basket.
+    ///
+    /// Deliberately not Swifter's `shareFilesFromDirectory`: that concatenates
+    /// the request path straight onto the directory with no containment check,
+    /// and `HttpRouter` percent-decodes the token before handing it over — so
+    /// `GET /spores/..%2F..%2F..%2Fetc%2Fpasswd` walks out of the Basket and
+    /// serves anything the user can read to anyone on the LAN.
+    ///
+    /// The Basket is flat, so collapsing to the last path component removes any
+    /// traversal outright; the containment check below backstops that in case
+    /// the layout ever gains subdirectories.
+    private func serveBasketFile(_ requested: String) -> HttpResponse {
+        let basket = Storage.shared.basketDir
+
+        let name = (requested as NSString).lastPathComponent
+        // Reject empty, "."/"..", and dotfiles.
+        guard !name.isEmpty, !name.hasPrefix(".") else { return .notFound }
+
+        let fileURL = basket.appendingPathComponent(name)
+        let basketPath = basket.resolvingSymlinksInPath().standardizedFileURL.path
+        let filePath = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard filePath.hasPrefix(basketPath + "/") else { return .notFound }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: filePath, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let file = try? filePath.openForReading() else { return .notFound }
+
+        var headers = ["Content-Type": name.mimeType()]
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: filePath),
+           let size = attrs[.size] as? UInt64 {
+            headers["Content-Length"] = String(size)
+        }
+        return .raw(200, "OK", headers) { writer in
+            try? writer.write(file)
+            file.close()
         }
     }
 
-    private func http(_ conn: NWConnection, code: Int, body: String) {
-        let msg = "HTTP/1.1 \(code) \(code == 200 ? "OK" : "Error")\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        conn.send(content: Data(msg.utf8), completion: .contentProcessed { _ in conn.cancel() })
+    private func indexHTML() -> String {
+        let files = Storage.shared.basketFiles()
+        let fmt = ByteCountFormatter(); fmt.countStyle = .file
+        let rows = files.map { url -> String in
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let name = url.lastPathComponent
+            let href = "/spores/" + (name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)
+            return "<li><a href=\"\(href)\">\(name.htmlEscaped)</a><span>\(fmt.string(fromByteCount: Int64(size)))</span></li>"
+        }.joined(separator: "\n")
+        let body = files.isEmpty ? "<p class=\"empty\">The basket is empty.</p>" : "<ul>\(rows)</ul>"
+        return """
+        <!doctype html><html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>🍄 Spore Cloud</title><style>
+        body{font:16px -apple-system,system-ui,sans-serif;background:#0f1219;color:#eee;margin:0;padding:24px}
+        h1{font-size:22px;margin:0 0 4px}p.sub{color:#8b8f98;margin:0 0 20px;font-size:14px}
+        ul{list-style:none;padding:0;margin:0}
+        li{display:flex;justify-content:space-between;gap:12px;align-items:center;
+           background:#1a1e26;border-radius:12px;padding:12px 16px;margin-bottom:8px}
+        a{color:#e8a37a;text-decoration:none;word-break:break-all}
+        span{color:#8b8f98;font-size:13px;white-space:nowrap}
+        p.empty{color:#8b8f98}
+        </style></head><body>
+        <h1>🍄 Spore Cloud</h1><p class="sub">\(files.count) file\(files.count == 1 ? "" : "s") in the basket</p>
+        \(body)</body></html>
+        """
     }
 
     /// A share link for a given filename served over LAN. Returns nil if not running.
     func link(for name: String) -> String? {
         guard isRunning, let ip = localIP() else { return nil }
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        return "http://\(ip):8420/\(encoded)"
+        return "http://\(ip):\(Self.port)/spores/\(encoded)"
+    }
+
+    /// The browsable basket index, for sharing the whole basket at once.
+    func indexLink() -> String? {
+        guard isRunning, let ip = localIP() else { return nil }
+        return "http://\(ip):\(Self.port)/"
     }
 
     private func localIP() -> String? {
@@ -995,6 +1051,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboard.start()
         timerManager.start()
         _ = SporeManager.shared
+        Chimes.install(delegate: self)
         NightcapController.shared.startMonitoring()
         SporeCloud.shared.start { [weak self] in
             DispatchQueue.main.async {
@@ -1033,7 +1090,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosure(_ sender: NSApplication) -> Bool { false }
+    // Note the spelling: ...Closed, not ...Closure. Misspelled, this silently
+    // matches nothing on NSApplicationDelegate and never runs, leaving the
+    // menu bar app free to quit when its last window goes away.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 // MARK: - Popover View
@@ -1044,7 +1104,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
 
     // Fungi vocabulary
     enum Tab: Int, CaseIterable {
-        case burrow, pantry, basket, timers, media, fairyring, settings
+        case burrow, pantry, basket, timers, media, grove, post, almanac, hollow, echo, fairyring, settings
         var title: String {
             switch self {
             case .burrow: return "Burrow"
@@ -1052,6 +1112,11 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             case .basket: return "Basket"
             case .timers: return "Timers"
             case .media: return "Media"
+            case .grove: return "Grove"
+            case .post: return "Post"
+            case .almanac: return "Almanac"
+            case .hollow: return "Hollow"
+            case .echo: return "Echo"
             case .fairyring: return "Fairy Ring"
             case .settings: return "Settings"
             }
@@ -1063,6 +1128,11 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             case .basket: return "🧺"
             case .timers: return "⏱"
             case .media: return "🎵"
+            case .grove: return "🌳"
+            case .post: return "📮"
+            case .almanac: return "📖"
+            case .hollow: return "🪵"
+            case .echo: return "🎙"
             case .fairyring: return "🪄"
             case .settings: return "⚙"
             }
@@ -1092,12 +1162,43 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
     var pillToggle: NSButton!
     var shareButton: NSButton!
     var cloudLinkBtn: NSButton!
+    var basketIndexBtn: NSButton!
     var cloudStatusLabel: NSTextField!
     var cloudToggleButton: NSButton!
     var nightcapToggle: NSButton!
     var nightcapHint: NSTextField!
     var sporeHint: NSTextField!
     var statusLabel: NSTextField!
+
+    // Grove build-out panes + controls (built in GroveUI.swift)
+    var grovePane: NSView!
+    var postPane: NSView!
+    var almanacPane: NSView!
+    var hollowPane: NSView!
+    var echoPane: NSView!
+    var groveVolume: NSSlider!
+    var groveOutputs: NSPopUpButton!
+    var groveMicBtn: NSButton!
+    var groveMeetingLabel: NSTextField!
+    var grovePowerToggle: NSButton!
+    var groveHint: NSTextField!
+    var postHandleField: NSTextField!
+    var postMessageField: NSTextField!
+    var postStatus: NSTextField!
+    var almanacField: NSTextField!
+    var almanacReminderToggle: NSButton!
+    var almanacStatus: NSTextField!
+    var hollowField: NSTextField!
+    var hollowOutput: NSTextView!
+    var echoButton: NSButton!
+    var echoStatus: NSTextField!
+    var echoOutput: NSTextView!
+    var lyricsToggle: NSButton!
+    var lyricsLabel: NSTextField!
+    var mediaTitleLabel: NSTextField!
+    var mediaHintLabel: NSTextField!
+    var breezeObservers: [NSObjectProtocol] = []
+    var shortcutRows: [NSView] = []
 
     // Status bar
     let footer = GlassCard(frame: .zero)
@@ -1170,6 +1271,11 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         buildBasket(in: content)
         buildTimers(in: content)
         buildMedia(in: content)
+        buildGrove(in: content)
+        buildPost(in: content)
+        buildAlmanac(in: content)
+        buildHollow(in: content)
+        buildEcho(in: content)
         buildFairyRing(in: content)
         buildSettings(in: content)
 
@@ -1227,15 +1333,25 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         case .basket: subtitleLabel.stringValue = "Toss files into your basket (iCloud sync)"
         case .timers: subtitleLabel.stringValue = "Ticking along until ready"
         case .media: subtitleLabel.stringValue = "Music at the cap of your Mac"
+        case .grove: subtitleLabel.stringValue = "Handy tools under the canopy"
+        case .post: subtitleLabel.stringValue = "Quick replies, carried by moths"
+        case .almanac: subtitleLabel.stringValue = "Plain words become plans"
+        case .hollow: subtitleLabel.stringValue = "A terminal in the hollow log"
+        case .echo: subtitleLabel.stringValue = "Speak — the forest writes it down"
         case .fairyring: subtitleLabel.stringValue = "Pick your toadstools"
         case .settings: subtitleLabel.stringValue = "Tune your fungi"
         }
         for v in [searchField, clipTable, fileTable, timerList, basketView,
                   mediaRow, timerAdd, sporeTable, sporeHint, cloudStatusLabel,
                   cloudToggleButton, nightcapToggle, nightcapHint,
-                  launchAtLogin, pillToggle, shareButton, cloudLinkBtn] {
+                  launchAtLogin, pillToggle, shareButton, cloudLinkBtn, basketIndexBtn] {
             v?.isHidden = true
         }
+        for v in [grovePane, postPane, almanacPane, hollowPane, echoPane,
+                  lyricsToggle, lyricsLabel, mediaTitleLabel, mediaHintLabel] as [NSView?] {
+            v?.isHidden = true
+        }
+        for v in shortcutRows { v.isHidden = true }
         switch tab {
         case .burrow:
             buildBurrowContents()
@@ -1248,6 +1364,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             fileTable.isHidden = false
             shareButton.isHidden = false
             cloudLinkBtn.isHidden = false
+            basketIndexBtn.isHidden = false
             fileTable.reloadData()
         case .timers:
             timerList.isHidden = false
@@ -1255,6 +1372,22 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             timerList.reloadData()
         case .media:
             mediaRow.isHidden = false
+            mediaTitleLabel.isHidden = false
+            mediaHintLabel.isHidden = false
+            lyricsToggle.isHidden = false
+            lyricsLabel.isHidden = false
+            lyricsToggle.state = Songbird.shared.active ? .on : .off
+        case .grove:
+            grovePane.isHidden = false
+            refreshGrove()
+        case .post:
+            postPane.isHidden = false
+        case .almanac:
+            almanacPane.isHidden = false
+        case .hollow:
+            hollowPane.isHidden = false
+        case .echo:
+            echoPane.isHidden = false
         case .fairyring:
             sporeTable.isHidden = false
             sporeHint.isHidden = false
@@ -1266,6 +1399,7 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             cloudToggleButton.isHidden = false
             nightcapToggle.isHidden = false
             nightcapHint.isHidden = false
+            for v in shortcutRows { v.isHidden = false }
             refreshSettings()
         }
     }
@@ -1375,8 +1509,13 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
 
         cloudLinkBtn = ShroomButton(title: "Copy link", icon: "🔗", color: FungiTheme.moss)
         cloudLinkBtn.target = self; cloudLinkBtn.action = #selector(copyShareLink)
-        cloudLinkBtn.frame = NSRect(x: 122, y: 336, width: 130, height: 32)
+        cloudLinkBtn.frame = NSRect(x: 118, y: 336, width: 126, height: 32)
         parent.addSubview(cloudLinkBtn)
+
+        basketIndexBtn = ShroomButton(title: "Browse", icon: "🌐", color: FungiTheme.gill)
+        basketIndexBtn.target = self; basketIndexBtn.action = #selector(openBasketIndex)
+        basketIndexBtn.frame = NSRect(x: 250, y: 336, width: 118, height: 32)
+        parent.addSubview(basketIndexBtn)
 
         let fileCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("f"))
         fileCol.width = 370
@@ -1443,12 +1582,27 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         parent.addSubview(mediaRowLocal)
         mediaRow = mediaRowLocal
 
-        let mediaTitle = SectionLabel("Media controls", font: FungiTheme.title)
-        mediaTitle.frame = NSRect(x: 24, y: 280, width: 348, height: 24)
-        parent.addSubview(mediaTitle)
-        let mediaHint = SectionLabel("Tap to skip, pause, or play your tunes.", font: FungiTheme.body, color: FungiTheme.fog)
-        mediaHint.frame = NSRect(x: 24, y: 252, width: 348, height: 18)
-        parent.addSubview(mediaHint)
+        mediaTitleLabel = SectionLabel("Media controls", font: FungiTheme.title)
+        mediaTitleLabel.frame = NSRect(x: 24, y: 280, width: 348, height: 24)
+        parent.addSubview(mediaTitleLabel)
+        mediaHintLabel = SectionLabel("Tap to skip, pause, or play your tunes.", font: FungiTheme.body, color: FungiTheme.fog)
+        mediaHintLabel.frame = NSRect(x: 24, y: 252, width: 348, height: 18)
+        parent.addSubview(mediaHintLabel)
+
+        lyricsToggle = NSButton(checkboxWithTitle: "🐦 Songbird — live line-synced lyrics (Music app)",
+                                target: self, action: #selector(toggleLyrics))
+        lyricsToggle.font = FungiTheme.body
+        lyricsToggle.frame = NSRect(x: 24, y: 140, width: 348, height: 20)
+        parent.addSubview(lyricsToggle)
+
+        lyricsLabel = NSTextField(labelWithString: "")
+        lyricsLabel.font = FungiTheme.subtitle
+        lyricsLabel.textColor = FungiTheme.gill
+        lyricsLabel.alignment = .center
+        lyricsLabel.maximumNumberOfLines = 4
+        lyricsLabel.lineBreakMode = .byWordWrapping
+        lyricsLabel.frame = NSRect(x: 24, y: 30, width: 348, height: 100)
+        parent.addSubview(lyricsLabel)
     }
 
     func buildFairyRing(in parent: NSView) {
@@ -1501,9 +1655,54 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         launchAtLogin.frame = NSRect(x: 14, y: 258, width: 370, height: 20)
         parent.addSubview(launchAtLogin)
 
-        let footer = SectionLabel("Fungi · MIT · made for your notch", font: FungiTheme.body, color: FungiTheme.whisper)
+        // --- Global hotkeys (KeyboardShortcuts recorders, scrollable) ---
+        let chimesTitle = SectionLabel("🔔 Chimes — global hotkeys", font: FungiTheme.subtitle)
+        chimesTitle.frame = NSRect(x: 14, y: 226, width: 240, height: 18)
+        parent.addSubview(chimesTitle)
+        shortcutRows.append(chimesTitle)
+
+        let resetBtn = ShroomButton(title: "Reset", icon: "↺", color: FungiTheme.whisper)
+        resetBtn.target = self; resetBtn.action = #selector(resetShortcuts)
+        resetBtn.frame = NSRect(x: 292, y: 222, width: 92, height: 26)
+        parent.addSubview(resetBtn)
+        shortcutRows.append(resetBtn)
+
+        let rowH: CGFloat = 30
+        let docH = CGFloat(Chimes.all.count) * rowH
+        let scroll = NSScrollView(frame: NSRect(x: 14, y: 44, width: 370, height: 172))
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 10
+
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 352, height: docH))
+        for (i, (label, name)) in Chimes.all.enumerated() {
+            // Lay out top-down in the document's flipped-from-the-top ordering.
+            let y = docH - CGFloat(i + 1) * rowH + 3
+
+            let l = SectionLabel(label, font: FungiTheme.body, color: FungiTheme.fog)
+            l.frame = NSRect(x: 6, y: y + 2, width: 176, height: 18)
+            doc.addSubview(l)
+
+            let recorder = KeyboardShortcuts.RecorderCocoa(for: name)
+            recorder.frame = NSRect(x: 190, y: y, width: 156, height: 24)
+            doc.addSubview(recorder)
+        }
+        scroll.documentView = doc
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, docH - 172)))
+        parent.addSubview(scroll)
+        shortcutRows.append(scroll)
+
+        let footer = SectionLabel("Fungi · MIT · built on Swifter, SimplyCoreAudio & KeyboardShortcuts",
+                                  font: FungiTheme.mono, color: FungiTheme.whisper)
         footer.frame = NSRect(x: 14, y: 16, width: 370, height: 18)
         parent.addSubview(footer)
+        shortcutRows.append(footer)
+    }
+
+    @objc func resetShortcuts() {
+        KeyboardShortcuts.reset(Chimes.all.map(\.1))
+        footerLabel.stringValue = "Chimes reset to their default hotkeys"
     }
 
     // MARK: - Actions
@@ -1589,6 +1788,16 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
         let pb = NSPasteboard.general; pb.clearContents()
         pb.setString(link, forType: .string)
         footerLabel.stringValue = "Copied: \(link)"
+    }
+
+    @objc func openBasketIndex() {
+        guard let link = SporeCloud.shared.indexLink(), let url = URL(string: link) else {
+            footerLabel.stringValue = "Spore Cloud not running — enable in Settings"
+            return
+        }
+        NSWorkspace.shared.open(url)
+        let pb = NSPasteboard.general; pb.clearContents(); pb.setString(link, forType: .string)
+        footerLabel.stringValue = "Basket index open — link copied: \(link)"
     }
 
     @objc func toggleCloud() {
@@ -1708,6 +1917,15 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
 
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
+extension String {
+    var htmlEscaped: String {
+        replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
 }
 
 // MARK: - Main

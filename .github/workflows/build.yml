@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: swift build (macOS)
+    # macos-14 ships the macOS 14 SDK, which Peel's Vision foreground-mask API
+    # and the macOS 14 EventKit calls need to compile behind their #available guards.
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: ${{ runner.os }}-spm-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Build (release)
+        run: swift build -c release
+
+      # Guards the thing that actually makes the app usable: without a valid
+      # Info.plist carrying usage descriptions, macOS kills Fungi the moment
+      # Echo, Almanac or Post touches a TCC-gated service.
+      - name: Validate Info.plist
+        run: |
+          plutil -lint Resources/Info.plist
+          for key in NSMicrophoneUsageDescription \
+                     NSSpeechRecognitionUsageDescription \
+                     NSCalendarsFullAccessUsageDescription \
+                     NSRemindersFullAccessUsageDescription \
+                     NSAppleEventsUsageDescription \
+                     CFBundleIdentifier LSUIElement; do
+            /usr/libexec/PlistBuddy -c "Print :$key" Resources/Info.plist >/dev/null \
+              || { echo "::error::Info.plist is missing $key"; exit 1; }
+          done
+          echo "All required Info.plist keys present."
+
+      - name: Bundle Fungi.app
+        run: ./Scripts/bundle.sh release
+
+      - name: Verify bundle
+        run: |
+          codesign --verify --verbose .build/Fungi.app
+          test -x .build/Fungi.app/Contents/MacOS/Fungi
+          plutil -lint .build/Fungi.app/Contents/Info.plist
+
+      - name: Upload Fungi.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fungi.app
+          path: .build/Fungi.app
+          if-no-files-found: error

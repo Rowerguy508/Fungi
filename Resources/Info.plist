@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Fungi</string>
+	<key>CFBundleDisplayName</key>
+	<string>Fungi</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.fungi.Fungi</string>
+	<key>CFBundleExecutable</key>
+	<string>Fungi</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>6.0</string>
+	<key>CFBundleVersion</key>
+	<string>6</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+
+	<!-- Menu bar accessory: no Dock icon, no main window. Mirrors the
+	     setActivationPolicy(.accessory) call in main.swift. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- TCC usage descriptions. These are not optional niceties: macOS
+	     terminates the process outright if it touches one of these services
+	     without the matching string, so Echo, Almanac and Post crash without
+	     them rather than showing a denial. -->
+
+	<!-- Echo: AVCaptureDevice.requestAccess(for: .audio), and Council's mic mute -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Fungi records voice notes in Echo and mutes your mic for meetings in Council.</string>
+
+	<!-- Echo: SFSpeechRecognizer transcription of those recordings -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Fungi transcribes your Echo voice notes on device so you can search them later.</string>
+
+	<!-- Almanac + the Calendar toadstool. macOS 14 reads the FullAccess keys;
+	     macOS 13 reads the legacy ones, so both are present. -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Fungi shows your next event and plants new ones from plain words in the Almanac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Fungi shows your next event and plants new ones from plain words in the Almanac.</string>
+
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Fungi plants reminders from plain words in the Almanac.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Fungi plants reminders from plain words in the Almanac.</string>
+
+	<!-- Post (Messages), Songbird (Music), Glow (volume), and the several
+	     spores that shell out to osascript. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Fungi sends iMessages from Post, reads the current track for Songbird lyrics, and adjusts volume from Glow.</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT licensed.</string>
+</dict>
+</plist>
