@@ -56,29 +56,41 @@ final class MyceliumSpore: Spore {
         lastReset = Date()
         let mask = CGEventMask(1 << 2)  // key down
         let holder = WeakHolder(self)
+        tapHolder = holder  // keep strong ref BEFORE handing pointer to C
+        // passUnretained: we own the holder via tapHolder; C only borrows.
+        let userInfo = Unmanaged.passUnretained(holder).toOpaque()
         eventTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
                                      options: .listenOnly,
                                      eventsOfInterest: mask,
                                      callback: { (_, _, _, userInfo) -> Unmanaged<CGEvent>? in
-            guard let holder = userInfo?.assumingMemoryBound(to: WeakHolder<MyceliumSpore>.self).pointee.value else {
-                return nil
-            }
-            holder.keyCount += 1
+            // Recreate the Unmanaged view from the opaque pointer each call —
+            // safe because tapHolder above keeps the WeakHolder alive for as
+            // long as the event tap is enabled.
+            guard let ptr = userInfo else { return nil }
+            let h = Unmanaged<WeakHolder<MyceliumSpore>>.fromOpaque(ptr).takeUnretainedValue()
+            guard let spore = h.value else { return nil }
+            spore.keyCount += 1
             return nil
-        }, userInfo: Unmanaged.passRetained(holder).toOpaque())
-        tapHolder = holder
+        }, userInfo: userInfo)
         if let tap = eventTap {
             let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
             statusText = "0 keys/min"
             Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.report() }
+        } else {
+            tapHolder = nil  // tap creation failed (missing Accessibility perm)
         }
     }
     func stop() {
-        if let tap = eventTap { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes) }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            // Drop the run-loop source first so no pending callbacks can fire.
+            let src = CFMachPortCreateRunLoopSource(nil, tap, 0)
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes)
+        }
         eventTap = nil
-        tapHolder = nil  // decrements retain count
+        tapHolder = nil  // safe — no C callback can reach holder anymore
         statusText = "Mycelium off"
     }
     private func report() {

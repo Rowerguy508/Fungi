@@ -1664,6 +1664,10 @@ final class PopoverViewController: NSViewController, NSTableViewDataSource, NSTa
             ))
             cell.sporeRef = WeakHolder(spore as AnyObject)
             cell.refresh()
+            // Explicitly re-run layout so the name label and ⓘ button settle
+            // into their final positions (init's frames use bounds before the
+            // cell has been added to a superview).
+            cell.layoutSubtreeIfNeeded()
             cell.onToggle = { [weak self] (holder: WeakHolder<AnyObject>) in
                 guard let self = self, let s = holder.value as? Spore else { return }
                 SporeManager.shared.toggle(s)
@@ -2016,7 +2020,6 @@ final class SporeCell: NSView {
         ring.layer?.borderColor = FungiTheme.cap.withAlphaComponent(0.4).cgColor
         ring.layer?.cornerRadius = 7
         addSubview(ring)
-        ring.frame = bounds
 
         iconLabel.font = NSFont.systemFont(ofSize: 18)
         iconLabel.alignment = .center
@@ -2030,9 +2033,16 @@ final class SporeCell: NSView {
         nameLabel.frame = NSRect(x: 2, y: 6, width: bounds.width - 4, height: 12)
         addSubview(nameLabel)
 
-        infoBtn.font = NSFont.systemFont(ofSize: 9)
-        infoBtn.bezelStyle = .circular
-        infoBtn.isBordered = false
+        // ⓘ button — small circular button at the bottom-right with a faint
+        // backing so it's actually visible (default NSButton with no bezel is
+        // invisible in dark mode).
+        infoBtn.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        infoBtn.bezelStyle = .smallSquare
+        infoBtn.isBordered = true
+        infoBtn.wantsLayer = true
+        infoBtn.layer?.cornerRadius = 7
+        infoBtn.layer?.backgroundColor = FungiTheme.canopy.cgColor
+        infoBtn.contentTintColor = FungiTheme.cap
         infoBtn.frame = NSRect(x: bounds.width - 16, y: 2, width: 14, height: 14)
         addSubview(infoBtn)
 
@@ -2047,10 +2057,17 @@ final class SporeCell: NSView {
     override func layout() {
         super.layout()
         ring.frame = bounds
-        iconLabel.frame = NSRect(x: 0, y: bounds.height - 28, width: bounds.width, height: 20)
-        nameLabel.frame = NSRect(x: 2, y: 6, width: bounds.width - 4, height: 12)
+        // Top half: emoji icon
+        iconLabel.frame = NSRect(x: 0, y: bounds.height - 22, width: bounds.width, height: 18)
+        // Middle: name label (avoid the ⓘ button by trimming width)
+        nameLabel.frame = NSRect(x: 2, y: bounds.height / 2 - 6, width: bounds.width - 4, height: 12)
+        // ⓘ at the bottom-right, free of overlap
         infoBtn.frame = NSRect(x: bounds.width - 16, y: 2, width: 14, height: 14)
+        // Force the button to lay out its title label and accept first-click
+        infoBtn.needsDisplay = true
     }
+
+    override var isFlipped: Bool { false } // AppKit default: y-up from bottom
 
     func refresh() {
         guard let spore = sporeRef?.value as? Spore else { return }
