@@ -16,7 +16,7 @@ extension KeyboardShortcuts.Name {
     static let snapLeft      = Self("snapLeft",      default: .init(.leftArrow, modifiers: [.command, .option]))
     static let snapRight     = Self("snapRight",     default: .init(.rightArrow, modifiers: [.command, .option]))
     static let snapFull      = Self("snapFull",      default: .init(.upArrow, modifiers: [.command, .option]))
-    static let pasteLast     = Self("pasteLast",     default: .init(.v, modifiers: [.command, .option, .shift]))
+    static let pasteLast     = Self("pastePrevious", default: .init(.v, modifiers: [.command, .option, .shift]))
 }
 
 enum Chimes {
@@ -29,7 +29,7 @@ enum Chimes {
         ("⬅  Snap window left", .snapLeft),
         ("➡  Snap window right", .snapRight),
         ("⛶  Snap window full", .snapFull),
-        ("📋  Paste last clip", .pasteLast)
+        ("📋  Copy previous clip", .pasteLast)
     ]
 
     /// Wire the hotkeys to their actions. Called once at launch.
@@ -51,7 +51,10 @@ enum Chimes {
         KeyboardShortcuts.onKeyUp(for: .snapRight) { Trellis.snap(.right) }
         KeyboardShortcuts.onKeyUp(for: .snapFull)  { Trellis.snap(.full) }
         KeyboardShortcuts.onKeyUp(for: .pasteLast) { [weak delegate] in
-            guard let item = delegate?.clipboard.items.first else { return }
+            guard let item = delegate?.clipboard.previousClip else {
+                Chimes.flash("📋 Nothing earlier in the Pantry")
+                return
+            }
             delegate?.clipboard.copy(item)
             Chimes.flash("📋 " + item.preview.prefix(40))
         }

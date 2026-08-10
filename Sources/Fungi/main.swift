@@ -202,7 +202,16 @@ final class ClipboardManager: ObservableObject {
         } else if let paths = item.filePaths {
             pb.writeObjects(paths.map { URL(fileURLWithPath: $0) } as [NSURL])
         }
+        // clearContents() bumps changeCount, so without this the next poll
+        // re-records what we just wrote and the Pantry fills with duplicates
+        // every time a clip is recopied.
+        lastChangeCount = pb.changeCount
     }
+
+    /// The most recent clip that isn't what's already on the pasteboard.
+    /// `items.first` is the current pasteboard content, so recopying it does
+    /// nothing — this is what the "paste previous clip" hotkey wants.
+    var previousClip: ClipboardItem? { items[safe: 1] }
 
     func clear() {
         items.removeAll()
@@ -768,8 +777,10 @@ final class SporeCloud {
 
         // Browsable index so a phone on the same WiFi can see the whole basket.
         server["/"] = { [weak self] _ in .ok(.html(self?.indexHTML() ?? "<h1>🍄 Fungi</h1>")) }
-        // Swifter handles range requests, MIME types, and streaming for us.
-        server["/spores/:path"] = shareFilesFromDirectory(basket.path)
+        server["/spores/:path"] = { [weak self] request in
+            guard let self, let raw = request.params.first?.value else { return .notFound }
+            return self.serveBasketFile(raw)
+        }
 
         do {
             try server.start(Self.port, forceIPv4: true)
@@ -784,6 +795,45 @@ final class SporeCloud {
         server.stop()
         isRunning = false
         statusChanged?()
+    }
+
+    /// Serve one file out of the Basket.
+    ///
+    /// Deliberately not Swifter's `shareFilesFromDirectory`: that concatenates
+    /// the request path straight onto the directory with no containment check,
+    /// and `HttpRouter` percent-decodes the token before handing it over — so
+    /// `GET /spores/..%2F..%2F..%2Fetc%2Fpasswd` walks out of the Basket and
+    /// serves anything the user can read to anyone on the LAN.
+    ///
+    /// The Basket is flat, so collapsing to the last path component removes any
+    /// traversal outright; the containment check below backstops that in case
+    /// the layout ever gains subdirectories.
+    private func serveBasketFile(_ requested: String) -> HttpResponse {
+        guard let basket = Storage.shared.basketDir else { return .notFound }
+
+        let name = (requested as NSString).lastPathComponent
+        // Reject empty, "."/"..", and dotfiles.
+        guard !name.isEmpty, !name.hasPrefix(".") else { return .notFound }
+
+        let fileURL = basket.appendingPathComponent(name)
+        let basketPath = basket.resolvingSymlinksInPath().standardizedFileURL.path
+        let filePath = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard filePath.hasPrefix(basketPath + "/") else { return .notFound }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: filePath, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let file = try? filePath.openForReading() else { return .notFound }
+
+        var headers = ["Content-Type": name.mimeType()]
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: filePath),
+           let size = attrs[.size] as? UInt64 {
+            headers["Content-Length"] = String(size)
+        }
+        return .raw(200, "OK", headers) { writer in
+            try? writer.write(file)
+            file.close()
+        }
     }
 
     private func indexHTML() -> String {

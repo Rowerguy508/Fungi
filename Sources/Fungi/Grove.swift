@@ -65,7 +65,12 @@ enum Trellis {
         // Checked above — an unguarded force cast here would crash the whole app
         // from a global hotkey when the front app exposes no focused window.
         let win = winAny as! AXUIElement
-        guard let screen = NSScreen.main, let primary = NSScreen.screens.first else { return false }
+        guard let primary = NSScreen.screens.first else { return false }
+        // Snap within the window's own screen. NSScreen.main follows keyboard
+        // focus, which for a menu bar accessory with its popover closed is not
+        // necessarily where the target window lives — using it would fling
+        // windows onto the primary display on a multi-monitor setup.
+        let screen = screenContaining(win, primary: primary) ?? NSScreen.main ?? primary
         let v = screen.visibleFrame
         let w = v.width, h = v.height
         let f: NSRect
@@ -83,9 +88,27 @@ enum Trellis {
         var size = CGSize(width: f.width, height: f.height)
         guard let posVal = AXValueCreate(.cgPoint, &origin),
               let sizeVal = AXValueCreate(.cgSize, &size) else { return false }
-        AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, posVal)
+        // Set size before and after the move: a window pinned to its old
+        // screen's bounds may clamp the first resize.
         AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, sizeVal)
-        return true
+        let posErr = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, posVal)
+        let sizeErr = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, sizeVal)
+        // Report what actually happened — a non-resizable window silently
+        // refuses, and claiming "snapped" for it is a lie.
+        return posErr == .success && sizeErr == .success
+    }
+
+    /// The screen the window currently sits on, by top-left corner.
+    private static func screenContaining(_ win: AXUIElement, primary: NSScreen) -> NSScreen? {
+        var posRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef) == .success,
+              let posAny = posRef,
+              CFGetTypeID(posAny) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        guard AXValueGetValue(posAny as! AXValue, .cgPoint, &point) else { return nil }
+        // AX y grows downward from the primary screen's top; NSScreen y grows upward.
+        let flipped = NSPoint(x: point.x, y: primary.frame.maxY - point.y)
+        return NSScreen.screens.first { NSPointInRect(flipped, $0.frame) }
     }
 }
 
@@ -134,10 +157,27 @@ enum Breeze {
 
     static func defaultOutput() -> AudioDevice? { engine.defaultOutputDevice }
 
-    @discardableResult
-    static func setDefaultOutput(_ device: AudioDevice) -> Bool {
+    /// CoreAudio applies the change asynchronously, so reading `defaultOutputDevice`
+    /// straight back reports failure for switches that do land a moment later —
+    /// especially AirPlay. Confirm on the `defaultOutputDeviceChanged`
+    /// notification instead of guessing from an immediate read.
+    static func setDefaultOutput(_ device: AudioDevice, confirmed: ((Bool) -> Void)? = nil) {
         device.isDefaultOutputDevice = true
-        return engine.defaultOutputDevice == device
+        guard let confirmed else { return }
+        var observer: NSObjectProtocol?
+        var settled = false
+        let finish: (Bool) -> Void = { ok in
+            guard !settled else { return }
+            settled = true
+            if let o = observer { NotificationCenter.default.removeObserver(o) }
+            confirmed(ok)
+        }
+        observer = NotificationCenter.default.addObserver(
+            forName: .defaultOutputDeviceChanged, object: nil, queue: .main
+        ) { _ in finish(engine.defaultOutputDevice == device) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            finish(engine.defaultOutputDevice == device)
+        }
     }
 
     /// Fires whenever devices are added/removed or the default output changes.
@@ -166,19 +206,24 @@ enum Council {
         return nil
     }
 
-    static func micVolume() -> Int { Int(runOSA("input volume of (get volume settings)")) ?? 0 }
+    /// nil when the input volume can't be read — some interfaces report
+    /// "missing value" rather than a number.
+    static func micVolume() -> Int? { Int(runOSA("input volume of (get volume settings)")) }
 
     /// Returns true if now muted.
+    ///
+    /// An unreadable volume must not be treated as 0: doing so reads as
+    /// "already muted" and unmutes you mid-meeting while reporting "Mic live".
+    /// Unknown is treated as live, so the hotkey mutes.
     static func toggleMute() -> Bool {
         let cur = micVolume()
-        if cur > 0 {
-            savedMic = cur
+        if cur == nil || cur! > 0 {
+            if let c = cur, c > 0 { savedMic = c }
             runOSA("set volume input volume 0")
             return true
-        } else {
-            runOSA("set volume input volume \(savedMic == 0 ? 75 : savedMic)")
-            return false
         }
+        runOSA("set volume input volume \(savedMic == 0 ? 75 : savedMic)")
+        return false
     }
 }
 
@@ -245,12 +290,34 @@ final class MarkupView: NSView {
     }
     func clear() { strokes.removeAll(); needsDisplay = true }
 
+    /// Composite the marks onto the *original* capture rather than snapshotting
+    /// this view — the view is scaled down to fit on screen, so rendering it
+    /// would throw away most of the screenshot's resolution.
     func rendered() -> NSImage? {
-        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
-        cacheDisplay(in: bounds, to: rep)
-        let img = NSImage(size: bounds.size)
-        img.addRepresentation(rep)
-        return img
+        let full = image.size
+        guard full.width > 0, full.height > 0, bounds.width > 0, bounds.height > 0 else { return nil }
+        let scaleX = full.width / bounds.width
+        let scaleY = full.height / bounds.height
+
+        let out = NSImage(size: full)
+        out.lockFocus()
+        defer { out.unlockFocus() }
+        image.draw(in: NSRect(origin: .zero, size: full))
+
+        guard let ctx = NSGraphicsContext.current else { return nil }
+        ctx.saveGraphicsState()
+        let xform = NSAffineTransform()
+        xform.scaleX(by: scaleX, yBy: scaleY)
+        xform.concat()
+        color.setStroke()
+        for p in strokes {
+            let scaled = p.copy() as! NSBezierPath
+            // Keep the on-screen stroke weight after the upscale.
+            scaled.lineWidth = p.lineWidth / max(scaleX, scaleY)
+            scaled.stroke()
+        }
+        ctx.restoreGraphicsState()
+        return out
     }
 }
 
@@ -602,6 +669,9 @@ final class Songbird {
     private var timer: Timer?
     private var lines: [LyricLine] = []
     private var currentTrackKey = ""
+    /// Tracks we've already looked up and found nothing for, so the label can
+    /// say so instead of sitting on "searching…" for the rest of the song.
+    private var unavailable: Set<String> = []
     var onUpdate: ((String) -> Void)?
 
     private let pollScript = """
@@ -655,7 +725,9 @@ final class Songbird {
             fetch(track: parts[0], artist: parts[1])
         }
         guard !lines.isEmpty else {
-            onUpdate?("🐦 \(parts[0]) — searching for lyrics…")
+            onUpdate?(unavailable.contains(key)
+                ? "🐦 \(parts[0]) — no synced lyrics found"
+                : "🐦 \(parts[0]) — searching for lyrics…")
             return
         }
         let idx = lines.lastIndex(where: { $0.time <= pos }) ?? 0
@@ -673,12 +745,18 @@ final class Songbird {
         guard let url = comps.url else { return }
         let expectKey = currentTrackKey
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self, let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let synced = obj["syncedLyrics"] as? String, !synced.isEmpty else { return }
-            let parsed = Songbird.parseLRC(synced)
+            guard let self else { return }
+            let parsed: [LyricLine] = {
+                guard let data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let synced = obj["syncedLyrics"] as? String, !synced.isEmpty else { return [] }
+                return Songbird.parseLRC(synced)
+            }()
             DispatchQueue.main.async {
-                if !parsed.isEmpty, self.currentTrackKey == expectKey { self.lines = parsed }
+                guard self.currentTrackKey == expectKey else { return }
+                // Record the miss too — a 404 or an unsynced-only entry must not
+                // leave the label stuck on "searching…" for the whole track.
+                if parsed.isEmpty { self.unavailable.insert(expectKey) } else { self.lines = parsed }
             }
         }.resume()
     }

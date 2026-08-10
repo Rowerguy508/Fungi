@@ -131,7 +131,6 @@ extension PopoverViewController {
     }
 
     func refreshGrove() {
-        groveVolume.integerValue = Dew.outputVolume()
         reloadOutputs()
         if let meeting = Council.activeMeetingApp() {
             groveMeetingLabel.stringValue = "🫂 Council: \(meeting) is running — 🎙 mutes your mic system-wide"
@@ -140,8 +139,22 @@ extension PopoverViewController {
             groveMeetingLabel.stringValue = "🫂 Council: no meeting app detected"
             groveMeetingLabel.textColor = FungiTheme.fog
         }
-        groveMicBtn.title = Council.micVolume() == 0 ? "🔇" : "🎙"
-        grovePowerToggle.state = LowPower.isOn() ? .on : .off
+
+        // Two osascript spawns plus pmset -g, each tens of milliseconds and able
+        // to block for seconds behind a first-run TCC prompt. Off the main
+        // thread so opening the Grove tab never stalls the popover.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let volume = Dew.outputVolume()
+            let mic = Council.micVolume()
+            let lowPower = LowPower.isOn()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.currentTab == .grove else { return }
+                self.groveVolume.integerValue = volume
+                self.groveMicBtn.title = (mic == 0) ? "🔇" : "🎙"
+                self.grovePowerToggle.state = lowPower ? .on : .off
+            }
+        }
+
         groveHint.stringValue = Trellis.trusted
             ? "Trellis ready. Spore Print opens a markup editor after capture. Peel cuts out the subject of any image (macOS 14+)."
             : "Trellis needs Accessibility permission — click a snap button once to get the system prompt, then grant it in System Settings › Privacy & Security › Accessibility."
@@ -176,19 +189,24 @@ extension PopoverViewController {
     @objc func brightnessDown() { Sunbeam.down() }
 
     @objc func toggleMicMute() {
-        let muted = Council.toggleMute()
-        groveMicBtn.title = muted ? "🔇" : "🎙"
-        footerLabel.stringValue = muted ? "Council: mic muted" : "Council: mic live"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let muted = Council.toggleMute()
+            DispatchQueue.main.async { [weak self] in
+                self?.groveMicBtn.title = muted ? "🔇" : "🎙"
+                self?.footerLabel.stringValue = muted ? "Council: mic muted" : "Council: mic live"
+            }
+        }
     }
 
     @objc func outputPicked(_ sender: NSPopUpButton) {
         let idx = sender.indexOfSelectedItem
         guard idx >= 0, idx < Breeze.lastList.count else { return }
         let dev = Breeze.lastList[idx]
-        if Breeze.setDefaultOutput(dev) {
-            footerLabel.stringValue = "Breeze: output → \(dev.name)"
-        } else {
-            footerLabel.stringValue = "Breeze: couldn't switch to \(dev.name)"
+        footerLabel.stringValue = "Breeze: switching to \(dev.name)…"
+        Breeze.setDefaultOutput(dev) { [weak self] ok in
+            self?.footerLabel.stringValue = ok
+                ? "Breeze: output → \(dev.name)"
+                : "Breeze: couldn't switch to \(dev.name)"
         }
     }
     @objc func refreshOutputs() { reloadOutputs() }
