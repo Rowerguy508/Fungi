@@ -1,84 +1,72 @@
 # Fungi 🍄
 
-A whimsical macOS menu bar app themed around mushrooms. Features 30 **spores** (extensions), a **nightcap** lock-screen overlay, a **basket** for tossed files (iCloud-synced), and **spore cloud** LAN sharing.
+A whimsical macOS menu bar app themed around mushrooms. Your Mac becomes a forest floor — the app is the mushroom cap, and 30 **spores** drop from it. Includes a **nightcap** lock-screen overlay, a **basket** for tossed files, and **spore cloud** LAN sharing.
 
-The menu bar app is the **mushroom cap**. Spores drop from it like leaves from a forest floor. All storage lives in iCloud so your fungi follows you between Macs.
+## Fungi vocabulary
 
-## Features
+| Old name | New name | What it is |
+|---|---|---|
+| App | **Fungi** | The mushroom cap, lives in your menu bar |
+| Main popover | **The Burrow** | Home — your fungi takes root here |
+| Extensions (30) | **Toadstools** | Toggle in the Fairy Ring |
+| Extension marketplace | **Fairy Ring** | Where the toadstools grow |
+| File tray | **Basket** | Toss files here, iCloud-synced |
+| Clipboard | **Pantry** | Every copy, kept and searchable |
+| Lock screen | **Nightcap** | Idle overlay, glass + widgets |
+| Cloud sharing | **Spore Cloud** | LAN file sharing |
+| Floating pill | **Burrow pill** | Dynamic Island-style top panel |
 
-### Core 🍄
-- **📋 Clipboard** — text, images, files. Search, click to copy back.
-- **🧺 Basket** — drag-drop files, tossed into iCloud Drive
-- **⏱ Timers** — countdown with notifications
-- **▶ Media** — play/pause/skip
-- **🌐 iCloud sync** — clips, timers, basket all in iCloud Drive
-- **🚀 Launch at login**
-- **🏝 Floating pill** — Dynamic Island-style top panel
+## Visual style
 
-### 30 Spores (extensions)
+Inspired by [getdroppy.app](https://getdroppy.app/):
+- **Dark glass cards** with translucent blur
+- **Sidebar nav** with accent-tinted active state
+- **Fungal palette**: canopy (page), mycelium (cards), cap (primary accent), moss (success), spore (pink), gill (cream)
+- **Rounded corners** (14px cards, 8-12px controls)
+- **Hero emoji + tagline** on the Burrow landing tab
+- **Status footer** showing last action
 
-#### Productivity (5)
-- 🍅 **Pomodoro** — 25/5 cycles with notifications
-- 🌱 **Truffle** — daily streak counter
-- 🎋 **Bamboo** — focus session timer
-- 🌳 **Morel** — random quote of the hour
-- 🍀 **Clover** — todos from `~/Documents/clover.md`
+## Tabs
 
-#### System (8)
-- 🔋 **Battery** — alerts at 20%
-- 💻 **System stats** — CPU + RAM
-- 📶 **Network** — SSID + ping latency
-- 🌾 **Stalk** — disk usage
-- 🌿 **Lichen** — system uptime
-- 🦋 **Moth** — process count
-- 🪨 **Capstone** — brightness
-- 🌻 **Pollen** — network bytes/sec
+1. **Burrow** 🍄 — landing with hero + live status
+2. **Pantry** 📋 — searchable clipboard history
+3. **Basket** 🧺 — drag-drop files → iCloud, share via AirDrop/Mail/Spore Cloud
+4. **Timers** ⏱ — countdowns with notifications
+5. **Media** 🎵 — play/pause/skip with circular controls
+6. **Fairy Ring** 🪄 — 30 toadstools (extensions) to toggle
+7. **Settings** ⚙ — cloud, nightcap, pill, launch-at-login
 
-#### Environment (3)
-- 🌤 **Weather** — wttr.in, no API key
-- 📅 **Calendar** — next event via EventKit
-- 🌿 **Fern** — public IP via ipify
+## 30 toadstools
 
-#### Activity tracking (5)
-- 🌱 **Mycelium** — keys/min (CGEventTap)
-- 🌿 **Pin** — keyboard shortcuts/min
-- 🐝 **Bee** — most-used app today
-- 🐌 **Slug** — idle duration
-- 🌲 **Conifer** — deep work (no Slack/Discord)
+### Productivity (5)
+🍅 Pomodoro · 🌱 Truffle · 🎋 Bamboo · 🌳 Morel · 🍀 Clover
 
-#### Fun (4)
-- 🍁 **Maple** — random hex color
-- 🦊 **Fox** — current git branch
-- 🐦 **Warbler** — placeholder
-- 🪶 **Quill** — clipboard content hash
+### System (8)
+🔋 Battery · 💻 System stats · 📶 Network · 🌾 Stalk · 🌿 Lichen · 🦋 Moth · 🪨 Capstone · 🌻 Pollen
 
-#### Shell (5)
-- 🌐 **Frontmost URL** — Safari/Chrome tab
-- 🌳 **Root** — Finder window count
-- 🍄‍🟫 **Sporework** — total windows
-- 🌼 **Bloom** — apps opened today
-- 🍂 **Husk** — clipboard size
-- 🍃 **Leaf** — run shell command periodically
+### Environment (3)
+🌤 Weather · 📅 Calendar · 🌿 Fern
 
-### Nightcap 🌙
-Idle-triggered full-screen overlay (NSPanel at `.screenSaver` level). Shows big clock, date, and live widget row (battery, weather, calendar, clip count). Hides on any input. Default 5 min idle, configurable via `nightcap.idleMinutes`.
+### Activity (5)
+🌱 Mycelium · 🌿 Pin · 🐝 Bee · 🐌 Slug · 🌲 Conifer
 
-### Spore Cloud ☁️
-LAN file sharing. Serves the Basket over `http://<local IP>:8420/<filename>`. Built on `Network.framework`. Toggle from Settings.
+### Fun (4)
+🍁 Maple · 🦊 Fox · 🐦 Warbler · 🪶 Quill
+
+### Shell (5+1)
+🌐 Frontmost URL · 🌳 Root · 🍄‍🟫 Sporework · 🌼 Bloom · 🍂 Husk · 🍃 Leaf
 
 ## Storage
 
 ```
 ~/Library/Mobile Documents/com~apple~CloudDocs/Fungi/
-├── clips.json        # clipboard history
-├── timers.json       # active timers
-├── clipImages/       # image clipboard items
-└── Basket/           # tossed files (sync source for Spore Cloud)
+├── clips.json        # Pantry clipboard history
+├── timers.json       # Active timers
+├── clipImages/       # Captured image clipboard
+└── Basket/           # Tossed files (source for Spore Cloud)
 ```
 
 ## Build
-
-Requires Xcode 15+, macOS 13+.
 
 ```bash
 swift run                # debug build → .build/debug/Fungi
@@ -89,19 +77,17 @@ swift build -c release   # release
 
 ```
 [1] App start: OK
-[2] iCloud Basket/ exists: True
-[3] Test file dropped: True
-[4] Spore Cloud port 8420: OK (reachable)
-[5] HTTP GET serves file: OK (2500 bytes, matches: True)
-[6] HTTP GET 404: OK (code=404)
+[2] Spore Cloud port 8420: OK (reachable)
+[3] HTTP GET serves file: OK (1700 bytes)
+[4] App process status after 6s: OK
 ```
 
-## Adding your own Spore
+## Adding your own Toadstool
 
 ```swift
-final class MySpore: Spore {
+final class MyToadstool: Spore {
     let id = "my"
-    let name = "My Spore"
+    let name = "My Toadstool"
     let icon = "✨"
     var enabled: Bool = UserDefaults.standard.bool(forKey: "spore.my")
     private(set) var statusText = "Idle"
@@ -110,7 +96,7 @@ final class MySpore: Spore {
 }
 ```
 
-Add to `SporeManager.shared.spores` array in `main.swift`.
+Add to `SporeManager.shared.spores` array.
 
 ## License
 
