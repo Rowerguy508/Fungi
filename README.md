@@ -51,22 +51,22 @@ Inspired by [getdroppy.app](https://getdroppy.app/):
 8. **Almanac** 📖 — natural-language events & reminders (EventKit)
 9. **Hollow** 🪵 — zsh terminal in the Burrow
 10. **Echo** 🎙 — voice recording with on-device transcription (Speech)
-11. **Fairy Ring** 🪄 — 34 toadstools (extensions) to toggle
+11. **Fairy Ring** 🪄 — 32 toadstools (extensions) to toggle
 12. **Settings** ⚙ — cloud, nightcap, pill, launch-at-login
 
-## 34 toadstools
+## 32 toadstools
 
 ### Productivity (5)
 🍅 Pomodoro · 🌱 Truffle · 🎋 Bamboo · 🌳 Morel · 🍀 Clover
 
-### System (9)
-🔋 Battery · 💻 System stats · 📶 Network · 🌾 Stalk · 🌿 Lichen · 🦋 Moth · 🪨 Capstone · 🌻 Pollen · 🌵 Cactus
+### System (8)
+🔋 Battery · 💻 System stats · 📶 Network · 🌾 Stalk · 🌿 Lichen · 🦋 Moth · 🪨 Capstone · 🌻 Pollen
 
 ### Environment (3)
 🌤 Weather · 📅 Calendar · 🌿 Fern
 
-### Activity (5)
-🌱 Mycelium · 🌿 Pin · 🐝 Bee · 🐌 Slug · 🌲 Conifer
+### Activity (4)
+🌱 Mycelium · 🌿 Pin · 🐝 Bee · 🌲 Conifer
 
 ### Fun (6)
 🍁 Maple · 🦊 Fox · 🐦 Warbler · 🪶 Quill · 🦗 Cricket (key sounds) · 🦉 Familiar (Claude/Codex/aider tracking)
